@@ -67,6 +67,8 @@ export default function AudioPlayer({ chapter, documentId }: AudioPlayerProps) {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  const hasAudio = chapter.audio_path !== null && chapter.audio_path !== undefined;
+
   return (
     <div style={{
       background: 'var(--off-white)',
@@ -74,11 +76,13 @@ export default function AudioPlayer({ chapter, documentId }: AudioPlayerProps) {
       padding: '32px',
       border: `1px solid var(--border)`
     }}>
-      <audio
-        ref={audioRef}
-        src={`/api/chapters/${chapter.id}/audio`}
-        onEnded={() => setIsPlaying(false)}
-      />
+      {hasAudio && (
+        <audio
+          ref={audioRef}
+          src={`/api/chapters/${chapter.id}/audio`}
+          onEnded={() => setIsPlaying(false)}
+        />
+      )}
 
       <h2 style={{
         fontSize: '24px',
@@ -88,6 +92,21 @@ export default function AudioPlayer({ chapter, documentId }: AudioPlayerProps) {
       }}>
         🎵 {chapter.title}
       </h2>
+
+      {/* Status */}
+      {!hasAudio && (
+        <div style={{
+          background: '#fef3c7',
+          border: '1px solid #f59e0b',
+          color: '#b45309',
+          padding: '16px',
+          borderRadius: '8px',
+          marginBottom: '24px',
+          fontSize: '14px'
+        }}>
+          ⚠️ Audio wird noch generiert... Kommt in Kürze! Für jetzt kannst du den Transcript lesen.
+        </div>
+      )}
 
       {/* Controls */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>

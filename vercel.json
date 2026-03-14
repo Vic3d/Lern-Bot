@@ -1,7 +1,4 @@
 {
-  "buildCommand": "pip install -r requirements.txt && next build",
-  "outputDirectory": ".next",
-  "env": {
-    "PYTHON_VERSION": "3.11"
-  }
+  "buildCommand": "next build",
+  "outputDirectory": ".next"
 }
