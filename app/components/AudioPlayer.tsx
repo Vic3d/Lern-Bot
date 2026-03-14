@@ -58,7 +58,6 @@ export default function AudioPlayer({ chapter, documentId }: AudioPlayerProps) {
     if (audioRef.current) {
       audioRef.current.currentTime = newTime;
     }
-    setCurrentTime(newTime);
   };
 
   const formatTime = (time: number) => {
@@ -69,85 +68,58 @@ export default function AudioPlayer({ chapter, documentId }: AudioPlayerProps) {
   };
 
   return (
-    <div className="bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900 rounded-2xl p-8 border border-slate-200 dark:border-slate-700">
-      <audio
-        ref={audioRef}
-        src={`/api/chapters/${chapter.id}/audio`}
-        onEnded={() => setIsPlaying(false)}
-      />
+    <div className="bg-slate-900 rounded-xl p-8 border border-slate-800">
+      <audio ref={audioRef} src={`/api/chapters/${chapter.id}/audio`} onEnded={() => setIsPlaying(false)} />
 
-      {/* Title */}
-      <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-8">
-        🎵 {chapter.title}
-      </h2>
+      <h2 className="text-2xl font-bold text-white mb-8">{chapter.title}</h2>
 
-      {/* Main Controls */}
-      <div className="space-y-8">
+      {/* Controls */}
+      <div className="space-y-6">
         
-        {/* Play/Pause + Skip */}
-        <div className="flex items-center justify-center gap-6">
-          <button
-            onClick={() => skip(-15)}
-            className="p-4 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-all duration-200 transform hover:scale-110 active:scale-95"
-            title="Rewind 15s"
-          >
-            <span className="text-2xl">⏮️</span>
-          </button>
-
+        {/* Play Button */}
+        <div className="flex items-center justify-center gap-4">
+          <button onClick={() => skip(-15)} className="text-slate-400 hover:text-white transition">⏮</button>
           <button
             onClick={togglePlay}
-            className="p-6 bg-gradient-to-br from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-110 active:scale-95"
-            title={isPlaying ? 'Pause' : 'Play'}
+            className="w-16 h-16 bg-blue-600 hover:bg-blue-700 text-white rounded-full flex items-center justify-center transition"
           >
-            {isPlaying ? <span className="text-4xl">⏸</span> : <span className="text-4xl">▶️</span>}
+            {isPlaying ? '⏸' : '▶'}
           </button>
-
-          <button
-            onClick={() => skip(15)}
-            className="p-4 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-all duration-200 transform hover:scale-110 active:scale-95"
-            title="Forward 15s"
-          >
-            <span className="text-2xl">⏭️</span>
-          </button>
+          <button onClick={() => skip(15)} className="text-slate-400 hover:text-white transition">⏭</button>
         </div>
 
-        {/* Progress Bar */}
-        <div className="space-y-3">
+        {/* Progress */}
+        <div className="space-y-2">
           <input
             type="range"
             min="0"
             max={duration || 0}
             value={currentTime}
             onChange={handleProgressChange}
-            className="w-full h-2 bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-600 hover:accent-blue-500"
+            className="w-full h-1 bg-slate-700 rounded cursor-pointer accent-blue-600"
           />
-          <div className="flex justify-between text-sm font-medium text-slate-600 dark:text-slate-400">
+          <div className="flex justify-between text-xs text-slate-500">
             <span>{formatTime(currentTime)}</span>
             <span>{formatTime(duration)}</span>
           </div>
         </div>
 
-        {/* Speed Controls */}
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <span className="text-sm font-medium text-slate-600 dark:text-slate-400 mr-2">Speed:</span>
+        {/* Speed */}
+        <div className="flex items-center justify-center gap-2">
+          <span className="text-sm text-slate-400">Speed:</span>
           {[0.75, 1.0, 1.25, 1.5].map((s) => (
             <button
               key={s}
               onClick={() => setSpeed(s)}
-              className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
+              className={`px-3 py-1 text-sm rounded transition ${
                 speed === s
-                  ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-lg'
-                  : 'bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-slate-100 hover:bg-slate-300 dark:hover:bg-slate-600'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 text-slate-400 hover:text-white'
               }`}
             >
               {s}x
             </button>
           ))}
-        </div>
-
-        {/* Status */}
-        <div className="text-center text-xs text-slate-500 dark:text-slate-500 font-medium">
-          ✓ Auto-saving • Currently at {formatTime(currentTime)}
         </div>
       </div>
     </div>
