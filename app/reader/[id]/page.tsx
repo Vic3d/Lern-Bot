@@ -10,7 +10,6 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [chapters, setChapters] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
-  const [showChapterMenu, setShowChapterMenu] = useState(false);
 
   useEffect(() => {
     fetchChapters();
@@ -36,7 +35,6 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     if (currentChapterIndex < chapters.length - 1) {
       setCurrentChapterIndex(currentChapterIndex + 1);
       setChapter(chapters[currentChapterIndex + 1]);
-      setShowChapterMenu(false);
     }
   };
 
@@ -44,22 +42,19 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     if (currentChapterIndex > 0) {
       setCurrentChapterIndex(currentChapterIndex - 1);
       setChapter(chapters[currentChapterIndex - 1]);
-      setShowChapterMenu(false);
     }
   };
 
   const goToChapter = (index: number) => {
     setCurrentChapterIndex(index);
     setChapter(chapters[index]);
-    setShowChapterMenu(false);
   };
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-gradient-to-br from-white via-slate-50 to-blue-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl mb-4 animate-bounce">📚</div>
-          <p className="text-slate-600 dark:text-slate-400">Loading your document...</p>
+      <main style={{ minHeight: '100vh', background: 'var(--white)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
+          <p style={{ color: 'var(--text-muted)' }}>Dokument wird geladen...</p>
         </div>
       </main>
     );
@@ -67,13 +62,13 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
 
   if (!chapter) {
     return (
-      <main className="min-h-screen bg-gradient-to-br from-white via-slate-50 to-blue-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 p-4">
+      <main style={{ minHeight: '100vh', background: 'var(--white)', padding: '32px' }}>
         <Link href="/">
-          <button className="text-blue-600 hover:text-blue-700 font-medium mb-4 flex items-center gap-2">
-            ← Back to Documents
+          <button style={{ color: 'var(--navy)', fontWeight: 600, marginBottom: '24px', background: 'none', border: 'none', cursor: 'pointer' }}>
+            ← Zurück
           </button>
         </Link>
-        <p className="text-slate-600 dark:text-slate-400">No chapters available</p>
+        <p style={{ color: 'var(--text-muted)' }}>Keine Kapitel gefunden</p>
       </main>
     );
   }
@@ -81,86 +76,185 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const progress = ((currentChapterIndex + 1) / chapters.length) * 100;
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-white via-slate-50 to-blue-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main style={{ minHeight: '100vh', background: 'var(--white)' }}>
+      {/* Header */}
+      <header style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        background: 'var(--navy)',
+        zIndex: 1000,
+        borderBottom: '1px solid rgba(255,255,255,0.1)'
+      }}>
+        <div style={{
+          maxWidth: '1280px',
+          margin: '0 auto',
+          padding: '0 2rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          height: '72px'
+        }}>
+          <Link href="/">
+            <button style={{
+              color: 'var(--white)',
+              fontWeight: 600,
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: '16px'
+            }}>
+              ← Zurück
+            </button>
+          </Link>
+          <div style={{
+            fontSize: '14px',
+            color: 'rgba(255,255,255,0.7)'
+          }}>
+            Kapitel {currentChapterIndex + 1} von {chapters.length}
+          </div>
+        </div>
+      </header>
+
+      {/* Content */}
+      <div style={{
+        maxWidth: '1280px',
+        margin: '0 auto',
+        padding: '100px 2rem 4rem'
+      }}>
         
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-6">
-            <Link href="/">
-              <button className="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 font-medium flex items-center gap-2 transition-colors">
-                ← Back
-              </button>
-            </Link>
-            <div className="text-sm font-medium text-slate-600 dark:text-slate-400">
-              Chapter {currentChapterIndex + 1} of {chapters.length}
-            </div>
-          </div>
-
-          {/* Progress Bar */}
-          <div className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden mb-6">
-            <div
-              className="h-full bg-gradient-to-r from-blue-600 to-cyan-600 transition-all duration-500"
-              style={{ width: `${progress}%` }}
-            ></div>
-          </div>
-
-          <h1 className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-white">
-            {chapter.title}
-          </h1>
+        {/* Progress */}
+        <div style={{
+          height: '4px',
+          background: 'var(--border)',
+          borderRadius: '2px',
+          marginBottom: '32px',
+          overflow: 'hidden'
+        }}>
+          <div
+            style={{
+              height: '100%',
+              background: 'var(--gold)',
+              width: `${progress}%`,
+              transition: 'width 0.3s ease'
+            }}
+          ></div>
         </div>
 
-        {/* Main Content */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 mb-12">
+        <h1 style={{ marginBottom: '32px', color: 'var(--text)' }}>
+          {chapter.title}
+        </h1>
+
+        {/* Main Grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 300px',
+          gap: '32px',
+          alignItems: 'start'
+        }}>
           
-          {/* Player + Transcript (3 cols) */}
-          <div className="lg:col-span-3 space-y-8">
+          {/* Left: Player + Transcript */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
             <AudioPlayer chapter={chapter} documentId={params.id} />
             <Transcript text={chapter.cleaned_text} />
           </div>
 
-          {/* Chapter Navigation (1 col) */}
-          <div className="lg:col-span-1">
-            <div className="sticky top-8 bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700">
-              <h3 className="font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
-                <span>📖</span> Chapters
-              </h3>
+          {/* Right: Navigation */}
+          <div style={{
+            background: 'var(--off-white)',
+            border: `1px solid var(--border)`,
+            borderRadius: '12px',
+            padding: '24px',
+            position: 'sticky',
+            top: '100px'
+          }}>
+            <h3 style={{
+              fontSize: '14px',
+              fontWeight: 700,
+              marginBottom: '16px',
+              color: 'var(--text)'
+            }}>
+              Kapitel
+            </h3>
 
-              {/* Chapter List */}
-              <div className="space-y-2 mb-6 max-h-64 overflow-y-auto">
-                {chapters.map((ch, index) => (
-                  <button
-                    key={ch.id}
-                    onClick={() => goToChapter(index)}
-                    className={`w-full text-left px-4 py-3 rounded-lg font-medium transition-all duration-200 ${
-                      index === currentChapterIndex
-                        ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-lg'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    <div className="text-sm opacity-75">{index + 1}</div>
-                    <div className="truncate">{ch.title}</div>
-                  </button>
-                ))}
-              </div>
+            <div style={{
+              maxHeight: '400px',
+              overflowY: 'auto',
+              marginBottom: '16px'
+            }}>
+              {chapters.map((ch, index) => (
+                <button
+                  key={ch.id}
+                  onClick={() => goToChapter(index)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '12px',
+                    marginBottom: '8px',
+                    background: index === currentChapterIndex ? 'var(--navy)' : 'var(--white)',
+                    color: index === currentChapterIndex ? 'var(--white)' : 'var(--text)',
+                    border: index === currentChapterIndex ? 'none' : `1px solid var(--border)`,
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (index !== currentChapterIndex) {
+                      (e.currentTarget as HTMLElement).style.background = 'var(--border)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (index !== currentChapterIndex) {
+                      (e.currentTarget as HTMLElement).style.background = 'var(--white)';
+                    }
+                  }}
+                >
+                  {ch.title}
+                </button>
+              ))}
+            </div>
 
-              {/* Navigation Buttons */}
-              <div className="space-y-2">
-                <button
-                  onClick={handlePrevChapter}
-                  disabled={currentChapterIndex === 0}
-                  className="w-full px-4 py-3 bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-white rounded-lg font-medium hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                >
-                  ← Previous
-                </button>
-                <button
-                  onClick={handleNextChapter}
-                  disabled={currentChapterIndex === chapters.length - 1}
-                  className="w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-lg font-medium hover:from-blue-700 hover:to-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                >
-                  Next →
-                </button>
-              </div>
+            {/* Navigation Buttons */}
+            <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
+              <button
+                onClick={handlePrevChapter}
+                disabled={currentChapterIndex === 0}
+                style={{
+                  padding: '10px',
+                  background: currentChapterIndex === 0 ? 'var(--border)' : 'var(--white)',
+                  color: 'var(--text)',
+                  border: `1px solid var(--border)`,
+                  borderRadius: '8px',
+                  cursor: currentChapterIndex === 0 ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  opacity: currentChapterIndex === 0 ? 0.5 : 1,
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                ← Zurück
+              </button>
+              <button
+                onClick={handleNextChapter}
+                disabled={currentChapterIndex === chapters.length - 1}
+                style={{
+                  padding: '10px',
+                  background: currentChapterIndex === chapters.length - 1 ? 'var(--border)' : 'var(--navy)',
+                  color: currentChapterIndex === chapters.length - 1 ? 'var(--text)' : 'var(--white)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: currentChapterIndex === chapters.length - 1 ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  opacity: currentChapterIndex === chapters.length - 1 ? 0.5 : 1,
+                  transition: 'all 0.2s ease'
+                }}
+              >
+                Weiter →
+              </button>
             </div>
           </div>
         </div>

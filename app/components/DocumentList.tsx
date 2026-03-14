@@ -16,35 +16,122 @@ interface DocumentListProps {
 
 export default function DocumentList({ documents }: DocumentListProps) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+      gap: '24px'
+    }}>
       {documents.map((doc) => (
-        <Link key={doc.id} href={`/reader/${doc.id}`}>
-          <div className="group cursor-pointer">
-            {/* PDF Card */}
-            <div className="bg-white rounded-lg overflow-hidden mb-3 h-40 flex items-center justify-center border border-slate-200 group-hover:border-slate-300 transition">
-              <div className="w-full h-full bg-gradient-to-br from-slate-100 to-slate-50 flex items-center justify-center">
-                <span className="text-4xl opacity-50">📄</span>
+        <Link key={doc.id} href={`/reader/${doc.id}`} style={{ textDecoration: 'none' }}>
+          <div
+            style={{
+              background: 'var(--white)',
+              border: `1px solid var(--border)`,
+              borderRadius: '12px',
+              padding: '24px',
+              transition: 'all 0.2s ease',
+              cursor: 'pointer',
+              height: '100%'
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLElement).style.boxShadow = '0 8px 24px rgba(27, 58, 140, 0.12)';
+              (e.currentTarget as HTMLElement).style.borderColor = 'var(--navy)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLElement).style.boxShadow = 'none';
+              (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)';
+            }}
+          >
+            {/* Icon */}
+            <div style={{
+              width: '56px',
+              height: '56px',
+              background: 'var(--off-white)',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '28px',
+              marginBottom: '16px'
+            }}>
+              📖
+            </div>
+
+            {/* Title */}
+            <h3 style={{
+              marginBottom: '8px',
+              color: 'var(--text)',
+              fontSize: '16px',
+              fontWeight: 600,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}>
+              {doc.filename}
+            </h3>
+
+            {/* Meta */}
+            <p style={{
+              color: 'var(--text-muted)',
+              fontSize: '13px',
+              marginBottom: '16px'
+            }}>
+              {doc.chapters_count} Kapitel
+            </p>
+
+            {/* Progress */}
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginBottom: '8px',
+                fontSize: '12px',
+                color: 'var(--text-muted)'
+              }}>
+                <span>Fortschritt</span>
+                <span>{Math.round(doc.progress * 100)}%</span>
+              </div>
+              <div style={{
+                width: '100%',
+                height: '6px',
+                background: 'var(--border)',
+                borderRadius: '3px',
+                overflow: 'hidden'
+              }}>
+                <div
+                  style={{
+                    height: '100%',
+                    background: 'var(--navy)',
+                    width: `${doc.progress * 100}%`,
+                    transition: 'width 0.3s ease'
+                  }}
+                ></div>
               </div>
             </div>
 
-            {/* Info */}
-            <h3 className="text-sm font-semibold text-slate-200 truncate group-hover:text-white transition">
-              {doc.filename}
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">
-              {Math.round(doc.progress * 100)}% • {doc.chapters_count} Kapitel
-            </p>
-            <p className="text-xs text-slate-600 mt-1">
-              {new Date(doc.last_accessed).toLocaleDateString('de-DE')}
-            </p>
-
-            {/* Progress Bar */}
-            <div className="mt-2 h-1 bg-slate-800 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-blue-600"
-                style={{ width: `${doc.progress * 100}%` }}
-              ></div>
-            </div>
+            {/* Button */}
+            <button
+              style={{
+                width: '100%',
+                background: 'var(--navy)',
+                color: 'var(--white)',
+                padding: '10px 16px',
+                borderRadius: '8px',
+                fontWeight: 600,
+                fontSize: '14px',
+                border: 'none',
+                cursor: 'pointer',
+                transition: 'background 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.background = '#122870';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.background = 'var(--navy)';
+              }}
+            >
+              Öffnen →
+            </button>
           </div>
         </Link>
       ))}

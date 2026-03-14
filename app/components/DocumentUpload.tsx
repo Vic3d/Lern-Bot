@@ -20,7 +20,6 @@ export default function DocumentUpload({ onUpload, loading }: DocumentUploadProp
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-
     const files = e.dataTransfer.files;
     if (files && files.length > 0 && files[0].type === 'application/pdf') {
       onUpload(files[0]);
@@ -36,33 +35,63 @@ export default function DocumentUpload({ onUpload, loading }: DocumentUploadProp
 
   return (
     <div
-      className={`border-2 border-dashed rounded-xl p-12 text-center transition ${
-        dragActive
-          ? 'border-blue-500 bg-blue-950/30'
-          : 'border-slate-700 hover:border-slate-600'
-      } ${loading ? 'opacity-50' : ''}`}
       onDragEnter={handleDrag}
       onDragLeave={handleDrag}
       onDragOver={handleDrag}
       onDrop={handleDrop}
+      style={{
+        border: `2px dashed ${dragActive ? 'var(--gold)' : 'var(--border)'}`,
+        borderRadius: '12px',
+        padding: '48px 32px',
+        textAlign: 'center',
+        background: dragActive ? 'rgba(232, 184, 0, 0.05)' : 'var(--off-white)',
+        transition: 'all 0.2s ease',
+        cursor: 'pointer'
+      }}
     >
       <input
         type="file"
         accept=".pdf"
         onChange={handleChange}
-        className="hidden"
         id="file-input"
         disabled={loading}
+        style={{ display: 'none' }}
       />
       
-      <label htmlFor="file-input" className="cursor-pointer">
-        <div className="text-5xl mb-4">{loading ? '⏳' : '📄'}</div>
-        <h3 className="text-lg font-semibold text-white mb-2">
+      <label htmlFor="file-input" style={{ cursor: 'pointer', display: 'block' }}>
+        <div style={{ fontSize: '48px', marginBottom: '16px' }}>
+          {loading ? '⏳' : '📄'}
+        </div>
+        <h3 style={{ marginBottom: '8px', fontSize: '20px' }}>
           {loading ? 'Verarbeitung läuft...' : 'PDF hochladen'}
         </h3>
-        <p className="text-slate-400 text-sm">
-          {loading ? 'Bitte warten...' : 'Datei hierher ziehen oder klicken'}
+        <p style={{
+          color: 'var(--text-muted)',
+          marginBottom: '24px',
+          fontSize: '14px'
+        }}>
+          {loading
+            ? 'Bitte warten...'
+            : 'Datei hierher ziehen oder klicken'}
         </p>
+
+        {!loading && (
+          <button
+            style={{
+              background: 'var(--navy)',
+              color: 'var(--white)',
+              padding: '12px 32px',
+              borderRadius: '8px',
+              fontWeight: 600,
+              fontSize: '14px',
+              border: 'none',
+              cursor: 'pointer'
+            }}
+            onClick={() => document.getElementById('file-input')?.click()}
+          >
+            PDF wählen
+          </button>
+        )}
       </label>
     </div>
   );
