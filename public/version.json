@@ -1,0 +1,11 @@
+{
+  "version": "0.2.1",
+  "buildTime": "2026-03-14T22:30:00Z",
+  "features": [
+    "PDF Upload",
+    "Text Extraction",
+    "Audio Generation (Pending)",
+    "Audio Player",
+    "Transcript View"
+  ]
+}

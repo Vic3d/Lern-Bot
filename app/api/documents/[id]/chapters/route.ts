@@ -7,7 +7,9 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const chaptersFile = path.join(process.cwd(), 'data', 'chapters.json');
+    const isVercel = process.env.VERCEL === '1';
+    const baseDir = isVercel ? '/tmp' : process.cwd();
+    const chaptersFile = path.join(baseDir, 'data', 'chapters.json');
     
     let chapters = [];
     if (fs.existsSync(chaptersFile)) {
@@ -19,7 +21,10 @@ export async function GET(
   } catch (error) {
     console.error('Error fetching chapters:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch chapters' },
+      { 
+        error: 'Failed to fetch chapters',
+        details: error instanceof Error ? error.message : String(error)
+      },
       { status: 500 }
     );
   }

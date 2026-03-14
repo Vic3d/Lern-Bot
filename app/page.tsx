@@ -84,7 +84,10 @@ export default function Home() {
             }}>📚</span>
             Smart PDF Reader
           </div>
-          <div style={{ fontSize: '24px' }}>👤</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.2.1</span>
+            <div style={{ fontSize: '24px' }}>👤</div>
+          </div>
         </div>
       </header>
 

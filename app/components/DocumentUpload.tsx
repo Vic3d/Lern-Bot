@@ -7,6 +7,12 @@ interface DocumentUploadProps {
   loading: boolean;
 }
 
+interface UploadState {
+  loading: boolean;
+  error?: string;
+  progress: number;
+}
+
 export default function DocumentUpload({ onUpload, loading }: DocumentUploadProps) {
   const [dragActive, setDragActive] = useState(false);
 
