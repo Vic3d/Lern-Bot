@@ -1,0 +1,119 @@
+# KAPITEL 1: STATIK EBENER TRAGWERKE
+
+## 1.1 TRAGELEMENTE EBENER SYSTEME
+
+### 1.1.1 Stabförmige Tragelemente
+
+Ein Stab ist ein gerades Bauteil, das an seinen beiden Enden jeweils gelenkig mit anderen Systemteilen verbunden ist.
+
+Kräfte werden nur durch die Gelenke in den Stab eingeleitet, das heißt, über die gesamte Länge des Stabes greifen keine Kräfte an.
+
+**WICHTIGE ERKENNTNIS: Ein Stab kann nur Kräfte in seine Längsrichtung übertragen.**
+
+Diese Erkenntnis zeigt sich durch das Momentengleichgewicht am Gelenk. Wenn Kräfte quer zur Stabrichtung wirken würden, würde das Gleichgewicht nicht erfüllt.
+
+**Seil**
+
+Ein Seil überträgt, wie ein Stab, nur Kräfte in seine Längsrichtung. Sie wissen jedoch aus Erfahrung, dass ein Seil, im Gegensatz zu einem Stab, nur Zugkräfte, jedoch keine Druckkräfte aufnehmen kann.
+
+**Balken**
+
+Ein Balken ist ein gerades stabförmiges Bauteil, das beliebig beansprucht sein kann. Typische Beispiele für Balken sind der Deckenträger in einem Bauwerk, die Achse eines Fahrzeugs oder die Antriebswelle einer Maschine.
+
+Bei ausreichender Dimensionierung können Balken Kräfte in beliebiger Richtung, insbesondere auch Kräfte, die senkrecht zur Balkenlängsachse wirken, aufnehmen und übertragen.
+
+**Bogen**
+
+Bögen unterscheiden sich von Balken lediglich dadurch, dass sie eine gekrümmte Längsachse haben. Sie werden an späterer Stelle erfahren, dass Bögen häufig eine günstigere Tragwirkung haben als Balken.
+
+**WICHTIG: Bei stabförmigen Bauteilen werden in Tragsystemen häufig nur die Bauteilachsen dargestellt.**
+
+### 1.1.2 Flächenartige Tragelemente
+
+Flächenartige Tragelemente sind Bauteile, bei denen die Dicke gegenüber den anderen Maßen klein ist.
+
+**Scheibe**
+
+Ein ebenes Flächentragwerk, dessen Kräfte in der Tragebene wirken, nennt man Scheibe.
+
+**Platte**
+
+Bei einer Platte greifen die Kräfte senkrecht zur Tragebene an.
+
+**Schale**
+
+Eine Schale ist ein flächenartiges Bauteil mit gekrümmter Fläche.
+
+---
+
+## ZUSAMMENFASSUNG: TRAGELEMENTE
+
+**Stabförmige Tragelemente:**
+- Stab: Gerade Form, gelenkig verbunden, nur Längskräfte
+- Seil: Wie Stab, aber NUR Zugkräfte (keine Druckkräfte!)
+- Balken: Gerade oder gekrümmt, beliebige Belastung
+- Bogen: Gekrümmte Längsachse, günstigere Tragwirkung
+
+**Flächenartige Tragelemente:**
+- Scheibe: Kräfte in Tragebene
+- Platte: Kräfte senkrecht zur Tragebene
+- Schale: Gekrümmte Fläche
+
+**KERNREGEL:**
+- Stäbe + Seile: NUR Längskräfte
+- Balken + Bögen: Beliebige Kräfte
+- Scheiben: Ebene Kräfte
+- Platten: Quer-Kräfte (räumlich)
+
+---
+
+## 1.2 LAGER UND ANSCHLÜSSE
+
+### FREIHEITSGRADE (Wichtig verstehen!)
+
+Ein starrer Körper hat in der Ebene **3 unabhängige Bewegungsmöglichkeiten** (Freiheitsgrade):
+1. Horizontale Verschiebung
+2. Vertikale Verschiebung
+3. Verdrehung (Rotation)
+
+### LAGERTYPEN UND IHRE WIRKUNG
+
+**Loslager (1-wertig):**
+- Verhindert: 1 Bewegung (vertikal)
+- Erlaubt: Horizontale Verschiebung, Verdrehung
+- Lagerkraft: Senkrecht zur Ladefläche
+
+**Festlager (2-wertig):**
+- Verhindert: 2 Bewegungen (horizontal + vertikal)
+- Erlaubt: Verdrehung
+- Lagerkräfte: Horizontal + Vertikal (2 Kräfte)
+
+**Einspannung (3-wertig):**
+- Verhindert: Alle 3 Bewegungen
+- Erlaubt: Nichts (komplett starr)
+- Lagerkräfte: Horizontal + Vertikal + Moment
+
+### WICHTIGE REGELN
+
+**Ein starrer Körper ist statisch bestimmt (starr), wenn:**
+- Er insgesamt 3-wertig gelagert ist, UND
+- Die Lagerkräfte nicht alle parallel sind, UND
+- Die Wirkungslinien sich nicht in einem Punkt schneiden
+
+**Ausnahmen:** 
+- Wenn alle Lagerkräfte parallel sind → Körper kann sich senkrecht dazu verschieben
+- Wenn alle Wirkungslinien durch einen Punkt gehen → Körper kann sich um diesen Punkt drehen
+
+---
+
+## KERNKONZEPTE ZUM MERKEN
+
+1. **Stab = nur Längskräfte** (geometrisch beweisbar durch Momentengleichgewicht)
+2. **Lager verhindert Freiheitsgrade** (1-wertig = 1 Freiheitsgrad weg, etc.)
+3. **3 Freiheitsgrade in der Ebene:** Verschieban horizontal, vertikal, drehen
+4. **Statisch bestimmt = 3-wertig gelagert** (wenn Bedingungen erfüllt)
+5. **Lagerkräfte wirken dort, wo Bewegung verhindert wird**
+
+---
+
+NÄCHSTES THEMA: Bestimmung von Lagerreaktionen (Gleichgewichtsbedingungen)
