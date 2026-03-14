@@ -9,6 +9,7 @@ interface DocumentUploadProps {
 
 export default function DocumentUpload({ onUpload, loading }: DocumentUploadProps) {
   const [dragActive, setDragActive] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -45,11 +46,11 @@ export default function DocumentUpload({ onUpload, loading }: DocumentUploadProp
 
   return (
     <div
-      className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+      className={`relative border-2 border-dashed rounded-2xl p-12 text-center transition-all duration-300 ${
         dragActive
-          ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
-          : 'border-slate-300 dark:border-slate-700 hover:border-blue-400'
-      } ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+          ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/30 scale-105'
+          : 'border-slate-300 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 bg-white/50 dark:bg-slate-800/50'
+      } ${loading ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
       onDragEnter={handleDrag}
       onDragLeave={handleDrag}
       onDragOver={handleDrag}
@@ -63,21 +64,46 @@ export default function DocumentUpload({ onUpload, loading }: DocumentUploadProp
         id="file-input"
         disabled={loading}
       />
-      <label htmlFor="file-input" className="cursor-pointer">
-        <div className="text-5xl mb-3">📁</div>
-        <h3 className="text-xl font-semibold mb-2">
-          {loading ? 'Processing...' : 'Upload Your PDF'}
+      
+      <label htmlFor="file-input" className="cursor-pointer block">
+        <div className="mb-6">
+          {!loading ? (
+            <div className="text-6xl animate-bounce">📄</div>
+          ) : (
+            <div className="text-6xl">⏳</div>
+          )}
+        </div>
+
+        <h3 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
+          {loading ? 'Processing your PDF...' : 'Upload Your PDF'}
         </h3>
-        <p className="text-slate-600 dark:text-slate-400 mb-4">
-          Drag and drop your PDF here, or click to browse
+
+        <p className="text-slate-600 dark:text-slate-400 mb-6 max-w-xl mx-auto">
+          {loading
+            ? 'Extracting text and generating audio. This may take a moment.'
+            : 'Drag and drop your PDF here, or click to browse. We support up to 100MB files.'}
         </p>
+
         {!loading && (
           <button
-            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium"
+            className="inline-flex items-center gap-2 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-8 py-3 rounded-lg font-semibold transition-all duration-300 transform hover:scale-105 active:scale-95"
             onClick={() => document.getElementById('file-input')?.click()}
           >
+            <span>📁</span>
             Choose PDF
           </button>
+        )}
+
+        {loading && (
+          <div className="mt-6">
+            <div className="w-full max-w-md mx-auto h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-600 to-cyan-600 transition-all duration-300"
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-3">{uploadProgress}%</p>
+          </div>
         )}
       </label>
     </div>
