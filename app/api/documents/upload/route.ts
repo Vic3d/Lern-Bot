@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { resolve } from 'path';
+import { createRequire } from 'module';
 
 // PDF.js direkt — gibt uns Position + strukturelle Wiederholungs-Erkennung
 // unpdf wird nicht mehr verwendet (concateniert Items ohne Positionsdaten)
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-// Worker-Pfad für Node.js/Vercel Serverless
-const workerPath = resolve(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs');
-GlobalWorkerOptions.workerSrc = workerPath;
+// Worker-Pfad: createRequire + require.resolve ist robust auf Vercel Serverless
+// (process.cwd() zeigt dort ggf. woanders hin)
+const _require = createRequire(import.meta.url);
+const workerPath = _require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs');
+GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
 
 function generateId() {
   return Math.random().toString(36).substring(2, 15);
