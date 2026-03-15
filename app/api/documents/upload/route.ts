@@ -1,10 +1,98 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-import { execSync } from 'child_process';
 
 function generateId() {
   return Math.random().toString(36).substring(2, 15);
+}
+
+function cleanText(text: string): string {
+  return text
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => {
+      if (!l || l.length < 2) return false;
+      if (/^-?\s*\d+\s*-?$/.test(l)) return false; // Seitenzahlen
+      if (/^Seite\s+\d+/i.test(l)) return false;
+      return true;
+    })
+    .join('\n');
+}
+
+function splitIntoChapters(text: string, filename: string) {
+  const headingPattern = /^(\d+[\.\d]*\s+[A-ZÄÖÜ][^\n]{3,80}|Einleitung.*|Zusammenfassung.*)$/;
+  const lines = text.split('\n');
+  const chapters: any[] = [];
+  let currentTitle = 'Einleitung';
+  let currentLines: string[] = [];
+  let chapterNum = 0;
+
+  for (const line of lines) {
+    if (headingPattern.test(line) && currentLines.join('').length > 300) {
+      if (currentLines.length > 0) {
+        chapterNum++;
+        const body = currentLines.join('\n').trim();
+        const wordCount = body.split(/\s+/).length;
+        chapters.push({
+          id: generateId(),
+          chapter_num: chapterNum,
+          title: currentTitle,
+          cleaned_text: body,
+          word_count: wordCount,
+          duration_seconds: Math.round(wordCount / 2.5),
+          audio_path: null,
+          audio_status: 'pending',
+          created_at: new Date().toISOString()
+        });
+      }
+      currentTitle = line.trim();
+      currentLines = [];
+    } else {
+      currentLines.push(line);
+    }
+  }
+
+  // Letztes Kapitel
+  if (currentLines.length > 0) {
+    chapterNum++;
+    const body = currentLines.join('\n').trim();
+    const wordCount = body.split(/\s+/).length;
+    chapters.push({
+      id: generateId(),
+      chapter_num: chapterNum,
+      title: currentTitle,
+      cleaned_text: body,
+      word_count: wordCount,
+      duration_seconds: Math.round(wordCount / 2.5),
+      audio_path: null,
+      audio_status: 'pending',
+      created_at: new Date().toISOString()
+    });
+  }
+
+  // Fallback: wenn zu wenig Kapitel → nach Wortanzahl splitten
+  if (chapters.length <= 1) {
+    const words = text.split(/\s+/);
+    const chunkSize = 1500;
+    const result: any[] = [];
+    for (let i = 0; i < words.length; i += chunkSize) {
+      const chunk = words.slice(i, i + chunkSize).join(' ');
+      const num = Math.floor(i / chunkSize) + 1;
+      const wordCount = words.slice(i, i + chunkSize).length;
+      result.push({
+        id: generateId(),
+        chapter_num: num,
+        title: `${filename} — Teil ${num}`,
+        cleaned_text: chunk,
+        word_count: wordCount,
+        duration_seconds: Math.round(wordCount / 2.5),
+        audio_path: null,
+        audio_status: 'pending',
+        created_at: new Date().toISOString()
+      });
+    }
+    return result;
+  }
+
+  return chapters;
 }
 
 export async function POST(request: NextRequest) {
@@ -20,82 +108,31 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Only PDF files are supported', success: false }, { status: 400 });
     }
 
-    console.log(`[UPLOAD] Starting upload of ${file.name}`);
-
-    const isVercel = process.env.VERCEL === '1';
-    const baseDir = isVercel ? '/tmp' : process.cwd();
-    const uploadsDir = path.join(baseDir, 'uploads');
-
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-
     const buffer = Buffer.from(await file.arrayBuffer());
-    const fileName = `${generateId()}-${file.name}`;
-    const filePath = path.join(uploadsDir, fileName);
-    fs.writeFileSync(filePath, buffer);
-    console.log(`[UPLOAD] PDF saved: ${filePath} (${buffer.length} bytes)`);
+    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-    // --- PDF extraction via pdfplumber Python script ---
-    const scriptPath = path.join(process.cwd(), 'scripts', 'extract_pdf.py');
-    let pythonResult: any = null;
-    let extractionNote = '';
+    // PDF-Extraktion via pdfjs-dist (reines JS, Vercel-kompatibel)
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs' as any);
+    const doc = await pdfjs.getDocument({ data: uint8 }).promise;
 
-    try {
-      const output = execSync(`python3 "${scriptPath}" "${filePath}"`, {
-        timeout: 120000,
-        maxBuffer: 50 * 1024 * 1024, // 50 MB
-      }).toString();
-
-      pythonResult = JSON.parse(output);
-
-      if (!pythonResult.success) {
-        throw new Error(pythonResult.error || 'Python extraction returned success=false');
-      }
-
-      extractionNote = `Extracted ${pythonResult.pages} pages, ${pythonResult.total_chars} chars, ${pythonResult.chapters_count} chapters`;
-      console.log(`[UPLOAD] PDF extracted: ${extractionNote}`);
-    } catch (e) {
-      console.warn(`[UPLOAD] PDF extraction via pdfplumber failed: ${e}`);
-      // Fallback: single "chapter" with error message
-      pythonResult = null;
-      extractionNote = 'extraction failed, using fallback';
+    let fullText = '';
+    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+      const page = await doc.getPage(pageNum);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .map((item: any) => ('str' in item ? item.str : ''))
+        .join(' ');
+      fullText += pageText + '\n';
     }
 
+    const cleanedText = cleanText(fullText);
     const documentId = generateId();
-    let chapters: any[];
+    const chaptersRaw = splitIntoChapters(cleanedText, file.name);
 
-    if (pythonResult && pythonResult.chapters && pythonResult.chapters.length > 0) {
-      // Map Python chapters to DB schema
-      chapters = pythonResult.chapters.map((ch: any) => ({
-        id: generateId(),
-        document_id: documentId,
-        chapter_num: ch.chapter_num,
-        title: ch.title,
-        cleaned_text: ch.text,
-        audio_path: null,
-        audio_status: 'pending',
-        duration_seconds: ch.duration_seconds || 0,
-        word_count: ch.word_count || 0,
-        created_at: new Date().toISOString(),
-      }));
-    } else {
-      // Fallback chapter
-      chapters = [
-        {
-          id: generateId(),
-          document_id: documentId,
-          chapter_num: 1,
-          title: file.name,
-          cleaned_text: `Inhalt aus ${file.name} konnte nicht automatisch extrahiert werden. Bitte stelle sicher, dass das PDF keine Scan-Grafiken enthält. Für beste Ergebnisse: digitale PDFs hochladen (kein Scan).`,
-          audio_path: null,
-          audio_status: 'pending',
-          duration_seconds: 0,
-          word_count: 0,
-          created_at: new Date().toISOString(),
-        },
-      ];
-    }
+    const chapters = chaptersRaw.map(ch => ({
+      ...ch,
+      document_id: documentId
+    }));
 
     const document = {
       id: documentId,
@@ -105,44 +142,24 @@ export async function POST(request: NextRequest) {
       last_accessed: new Date().toISOString(),
       created_at: new Date().toISOString(),
       status: 'ready',
+      extraction: `${doc.numPages} Seiten, ${cleanedText.length} Zeichen, ${chapters.length} Kapitel`
     };
 
-    const dataDir = path.join(baseDir, 'data');
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    console.log(`[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${doc.numPages} Seiten`);
 
-    const docsFile = path.join(dataDir, 'documents.json');
-    let docs: any[] = [];
-    try {
-      if (fs.existsSync(docsFile)) {
-        docs = JSON.parse(fs.readFileSync(docsFile, 'utf-8'));
-      }
-    } catch {}
-    docs.push(document);
-    fs.writeFileSync(docsFile, JSON.stringify(docs, null, 2));
-
-    const chaptersFile = path.join(dataDir, 'chapters.json');
-    let allChapters: any[] = [];
-    try {
-      if (fs.existsSync(chaptersFile)) {
-        allChapters = JSON.parse(fs.readFileSync(chaptersFile, 'utf-8'));
-      }
-    } catch {}
-    allChapters.push(...chapters);
-    fs.writeFileSync(chaptersFile, JSON.stringify(allChapters, null, 2));
-    console.log(`[UPLOAD] Saved ${chapters.length} chapters for doc ${documentId}`);
-
+    // Daten werden an den Client zurückgegeben — Client speichert in localStorage
     return NextResponse.json({
       success: true,
       document,
-      chapters: chapters.length,
-      extraction: extractionNote,
-      message: `PDF "${file.name}" hochgeladen. ${chapters.length} Kapitel extrahiert.`,
+      chapters,
+      message: `"${file.name}" hochgeladen — ${chapters.length} Kapitel extrahiert.`
     });
+
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[UPLOAD ERROR] ${errorMsg}`);
     return NextResponse.json(
-      { success: false, error: 'Upload failed', details: errorMsg, timestamp: new Date().toISOString() },
+      { success: false, error: 'Upload failed', details: errorMsg },
       { status: 500 }
     );
   }

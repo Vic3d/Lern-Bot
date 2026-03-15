@@ -1,28 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
+import { NextResponse } from 'next/server';
 
-export async function GET(request: NextRequest) {
-  try {
-    const isVercel = process.env.VERCEL === '1';
-    const baseDir = isVercel ? '/tmp' : process.cwd();
-    const dbPath = path.join(baseDir, 'data', 'documents.json');
-    
-    let documents = [];
-    if (fs.existsSync(dbPath)) {
-      const data = fs.readFileSync(dbPath, 'utf-8');
-      documents = JSON.parse(data);
-    }
-
-    return NextResponse.json({ documents, debug: { isVercel, dbPath } });
-  } catch (error) {
-    console.error('Error fetching documents:', error);
-    return NextResponse.json(
-      { 
-        error: 'Failed to fetch documents',
-        details: error instanceof Error ? error.message : String(error)
-      },
-      { status: 500 }
-    );
-  }
+// Auf Vercel gibt es kein persistentes Filesystem.
+// Dokumente werden client-seitig in localStorage gespeichert.
+// Diese Route ist ein Stub — der echte State liegt im Browser.
+export async function GET() {
+  return NextResponse.json({
+    documents: [],
+    clientStorage: true,
+    message: 'Documents are stored client-side in localStorage'
+  });
 }

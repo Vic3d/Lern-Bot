@@ -4,43 +4,80 @@ import { useState, useEffect } from 'react';
 import DocumentList from './components/DocumentList';
 import DocumentUpload from './components/DocumentUpload';
 
+const STORAGE_KEY = 'lernbot_documents';
+const CHAPTERS_KEY_PREFIX = 'lernbot_chapters_';
+
+function saveDocumentToStorage(document: any, chapters: any[]) {
+  if (typeof window === 'undefined') return;
+  const docs = getDocumentsFromStorage();
+  const existing = docs.findIndex((d: any) => d.id === document.id);
+  if (existing >= 0) {
+    docs[existing] = document;
+  } else {
+    docs.push(document);
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
+  localStorage.setItem(`${CHAPTERS_KEY_PREFIX}${document.id}`, JSON.stringify(chapters));
+}
+
+function getDocumentsFromStorage(): any[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function deleteDocumentFromStorage(docId: string) {
+  if (typeof window === 'undefined') return;
+  const docs = getDocumentsFromStorage().filter((d: any) => d.id !== docId);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
+  localStorage.removeItem(`${CHAPTERS_KEY_PREFIX}${docId}`);
+}
+
 export default function Home() {
   const [documents, setDocuments] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchDocuments();
+    // Aus localStorage laden
+    setDocuments(getDocumentsFromStorage());
   }, []);
-
-  const fetchDocuments = async () => {
-    try {
-      const response = await fetch('/api/documents');
-      const data = await response.json();
-      setDocuments(data.documents || []);
-    } catch (error) {
-      console.error('Error fetching documents:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleUpload = async (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
+    setLoading(true);
+    setUploadError(null);
 
     try {
-      setLoading(true);
       const response = await fetch('/api/documents/upload', {
         method: 'POST',
         body: formData,
       });
       const data = await response.json();
-      setDocuments([...documents, data.document]);
-    } catch (error) {
-      console.error('Error uploading document:', error);
+
+      if (!data.success) {
+        setUploadError(data.error || 'Upload fehlgeschlagen');
+        return;
+      }
+
+      // In localStorage speichern
+      saveDocumentToStorage(data.document, data.chapters);
+      setDocuments(getDocumentsFromStorage());
+    } catch (error: any) {
+      setUploadError(`Fehler: ${error.message}`);
+      console.error('Upload error:', error);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDelete = (docId: string) => {
+    deleteDocumentFromStorage(docId);
+    setDocuments(getDocumentsFromStorage());
   };
 
   return (
@@ -85,8 +122,7 @@ export default function Home() {
             Smart PDF Reader
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.2.1</span>
-            <div style={{ fontSize: '24px' }}>👤</div>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.3.0</span>
           </div>
         </div>
       </header>
@@ -97,30 +133,37 @@ export default function Home() {
         margin: '0 auto',
         padding: '120px 2rem 4rem',
       }}>
-        
+
         {/* Hero */}
         <div style={{ marginBottom: '3rem' }}>
           <h1 style={{ marginBottom: '12px' }}>Deine PDFs vorlesen lassen</h1>
-          <p style={{
-            fontSize: '18px',
-            color: 'var(--text-muted)',
-            maxWidth: '600px'
-          }}>
-            Lade ein PDF hoch und folge dem Audio. Intelligent extrahierte Inhalte, professionelle Sprachausgabe.
+          <p style={{ fontSize: '18px', color: 'var(--text-muted)', maxWidth: '600px' }}>
+            Lade ein PDF hoch — Text wird automatisch extrahiert und vorgelesen. Daten bleiben lokal in deinem Browser.
           </p>
         </div>
 
         {/* Upload */}
-        <div style={{ marginBottom: '4rem' }}>
+        <div style={{ marginBottom: '2rem' }}>
           <DocumentUpload onUpload={handleUpload} loading={loading} />
         </div>
 
-        {/* Documents */}
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '3rem' }}>
-            <p style={{ color: 'var(--text-muted)' }}>Dateien werden geladen...</p>
+        {/* Error */}
+        {uploadError && (
+          <div style={{
+            background: '#fef2f2',
+            border: '1px solid #fca5a5',
+            color: '#dc2626',
+            padding: '12px 16px',
+            borderRadius: '8px',
+            marginBottom: '2rem',
+            fontSize: '14px'
+          }}>
+            ⚠️ {uploadError}
           </div>
-        ) : documents.length === 0 ? (
+        )}
+
+        {/* Dokumente */}
+        {documents.length === 0 ? (
           <div style={{
             textAlign: 'center',
             padding: '3rem',
@@ -130,7 +173,7 @@ export default function Home() {
             <p style={{ color: 'var(--text-muted)' }}>Noch keine PDFs hochgeladen</p>
           </div>
         ) : (
-          <DocumentList documents={documents} />
+          <DocumentList documents={documents} onDelete={handleDelete} />
         )}
       </div>
     </main>

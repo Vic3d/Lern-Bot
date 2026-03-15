@@ -1,20 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { readChapters } from '@/lib/storage';
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const baseDir = process.cwd();
-    const chaptersFile = path.join(baseDir, 'data', 'chapters.json');
-
-    if (!fs.existsSync(chaptersFile)) {
-      return NextResponse.json({ error: 'Chapter not found' }, { status: 404 });
-    }
-
-    const chapters = JSON.parse(fs.readFileSync(chaptersFile, 'utf-8'));
+    const chapters = readChapters();
     const chapter = chapters.find((ch: any) => ch.id === params.id);
 
     if (!chapter) {
@@ -24,17 +18,14 @@ export async function GET(
     if (!chapter.audio_path) {
       return NextResponse.json(
         { error: 'Audio not yet generated', status: chapter.audio_status },
-        { status: 202 }  // 202 Accepted = noch ausstehend
+        { status: 202 }
       );
     }
 
-    const audioPath = path.join(baseDir, 'public', chapter.audio_path.replace(/^\//, ''));
+    const audioPath = path.join(process.cwd(), 'public', chapter.audio_path.replace(/^\//, ''));
 
     if (!fs.existsSync(audioPath)) {
-      return NextResponse.json(
-        { error: 'Audio file missing', audio_path: chapter.audio_path },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'Audio file missing' }, { status: 404 });
     }
 
     const audioBuffer = fs.readFileSync(audioPath);
@@ -47,12 +38,8 @@ export async function GET(
         'Accept-Ranges': 'bytes'
       }
     });
-
   } catch (error) {
     console.error('Error serving audio:', error);
-    return NextResponse.json(
-      { error: 'Failed to serve audio' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to serve audio' }, { status: 500 });
   }
 }
