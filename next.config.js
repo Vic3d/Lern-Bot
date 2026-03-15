@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // pdf-parse uses Node.js-only modules — exclude from webpack bundling
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
@@ -11,10 +10,18 @@ const nextConfig = {
         crypto: false,
         stream: false,
         buffer: false,
+        canvas: false,
       };
     }
+    // pdfjs-dist: canvas optional
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      canvas: false,
+    };
     return config;
   },
-}
+  // pdfjs-dist als external markieren (läuft nur server-side)
+  serverExternalPackages: ['pdfjs-dist'],
+};
 
-module.exports = nextConfig
+module.exports = nextConfig;
