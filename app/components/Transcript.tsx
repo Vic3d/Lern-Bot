@@ -4,7 +4,8 @@ import { useRef, useEffect, useMemo, useState } from 'react';
 
 interface TranscriptProps {
   text: string;
-  activeCharIndex?: number;
+  highlightCharIndex: number;
+  bionicReading: boolean;
 }
 
 interface Sentence {
@@ -45,17 +46,14 @@ function renderSentenceContent(sentence: string, bionic: boolean): React.ReactNo
   );
 }
 
-export default function Transcript({ text, activeCharIndex = -1 }: TranscriptProps) {
+export default function Transcript({ text, highlightCharIndex, bionicReading }: TranscriptProps) {
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([]);
-  const [bionicMode, setBionicMode] = useState<boolean>(false);
+  const [bionicReading, setBionicMode] = useState<boolean>(false);
 
-  useEffect(() => {
-    const stored = localStorage.getItem('lernbot_bionic');
-    if (stored === 'true') setBionicMode(true);
-  }, []);
+
 
   const toggleBionic = () => {
-    const next = !bionicMode;
+    const next = !bionicReading;
     setBionicMode(next);
     localStorage.setItem('lernbot_bionic', String(next));
   };
@@ -63,16 +61,16 @@ export default function Transcript({ text, activeCharIndex = -1 }: TranscriptPro
   const sentences = useMemo(() => parseSentences(text || ''), [text]);
 
   const activeSentenceIdx = useMemo(() => {
-    if (activeCharIndex < 0 || sentences.length === 0) return -1;
+    if (highlightCharIndex < 0 || sentences.length === 0) return -1;
     let found = 0;
     for (let i = sentences.length - 1; i >= 0; i--) {
-      if (activeCharIndex >= sentences[i].start) {
+      if (highlightCharIndex >= sentences[i].start) {
         found = i;
         break;
       }
     }
     return found;
-  }, [activeCharIndex, sentences]);
+  }, [highlightCharIndex, sentences]);
 
   useEffect(() => {
     if (activeSentenceIdx >= 0 && sentenceRefs.current[activeSentenceIdx]) {
@@ -96,16 +94,16 @@ export default function Transcript({ text, activeCharIndex = -1 }: TranscriptPro
         </h3>
         <button
           onClick={toggleBionic}
-          title={bionicMode ? 'Bionic Reading deaktivieren' : 'Bionic Reading aktivieren'}
+          title={bionicReading ? 'Bionic Reading deaktivieren' : 'Bionic Reading aktivieren'}
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: '6px',
             padding: '6px 14px',
             borderRadius: '20px',
-            border: '2px solid ' + (bionicMode ? 'var(--navy)' : 'var(--border)'),
-            background: bionicMode ? 'var(--navy)' : 'var(--white)',
-            color: bionicMode ? 'var(--white)' : 'var(--text-muted)',
+            border: '2px solid ' + (bionicReading ? 'var(--navy)' : 'var(--border)'),
+            background: bionicReading ? 'var(--navy)' : 'var(--white)',
+            color: bionicReading ? 'var(--white)' : 'var(--text-muted)',
             cursor: 'pointer',
             fontSize: '13px',
             fontWeight: 600,
@@ -115,13 +113,13 @@ export default function Transcript({ text, activeCharIndex = -1 }: TranscriptPro
           Bionic
           <span style={{
             width: '28px', height: '16px',
-            background: bionicMode ? 'var(--gold)' : 'var(--border)',
+            background: bionicReading ? 'var(--gold)' : 'var(--border)',
             borderRadius: '8px', position: 'relative', display: 'inline-block',
             transition: 'background 0.2s', flexShrink: 0,
           }}>
             <span style={{
               position: 'absolute', top: '2px',
-              left: bionicMode ? '14px' : '2px',
+              left: bionicReading ? '14px' : '2px',
               width: '12px', height: '12px',
               background: 'var(--white)', borderRadius: '50%',
               transition: 'left 0.2s',
@@ -145,7 +143,7 @@ export default function Transcript({ text, activeCharIndex = -1 }: TranscriptPro
               padding: i === activeSentenceIdx ? '1px 0' : '0',
             }}
           >
-            {renderSentenceContent(sentence.text, bionicMode)}
+            {renderSentenceContent(sentence.text, bionicReading)}
           </span>
         ))}
       </div>

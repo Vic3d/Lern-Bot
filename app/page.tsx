@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import DocumentList from './components/DocumentList';
 import DocumentUpload from './components/DocumentUpload';
 import { extractPDF } from '@/lib/pdfExtract';
+import { savePDF, deletePDF } from '@/lib/pdfStorage';
 
 const STORAGE_KEY = 'lernbot_documents';
 const CHAPTERS_KEY_PREFIX = 'lernbot_chapters_';
@@ -53,7 +54,10 @@ export default function Home() {
 
     try {
       // Client-seitige Extraktion — kein Server nötig, funktioniert auf Vercel
+      // PDF-Bytes für Viewer in IndexedDB speichern
+      const arrayBuffer = await file.arrayBuffer();
       const { document, chapters } = await extractPDF(file);
+      await savePDF(document.id, arrayBuffer);
       saveDocumentToStorage(document, chapters);
       setDocuments(getDocumentsFromStorage());
     } catch (error: any) {
@@ -66,6 +70,7 @@ export default function Home() {
 
   const handleDelete = (docId: string) => {
     deleteDocumentFromStorage(docId);
+    deletePDF(docId).catch(() => {});
     setDocuments(getDocumentsFromStorage());
   };
 
@@ -111,7 +116,7 @@ export default function Home() {
             Smart PDF Reader
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.5.0</span>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.6.0</span>
           </div>
         </div>
       </header>
