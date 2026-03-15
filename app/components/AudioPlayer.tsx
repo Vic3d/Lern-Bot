@@ -9,7 +9,6 @@ interface AudioPlayerProps {
   onEnded?: () => void;
   speed: number;
   onSpeedChange: (speed: number) => void;
-  startFromChar?: number; // wenn gesetzt → TTS startet ab dieser Position
   seekToChar?: { char: number; seq: number } | null; // reaktiv: TTS-Neustart
 }
 
