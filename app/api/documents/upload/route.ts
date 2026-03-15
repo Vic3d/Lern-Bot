@@ -46,50 +46,41 @@ function isRepeatedLine(line: string): boolean {
   return false;
 }
 
-/** Erkennt laufende Kopf-/Fußzeilen: Zeilen die ≥4x identisch vorkommen */
-function detectRunningHeaders(lines: string[]): Set<string> {
-  const counts = new Map<string, number>();
-  for (const l of lines) {
-    const t = l.trim();
-    if (t.length >= 2 && t.split(/\s+/).length <= 10) {
-      counts.set(t, (counts.get(t) || 0) + 1);
+/**
+ * Bereinigt Text per-page: entfernt bekannte AKAD-Header-Zeilen (Seitenzahl, "Kapitel N", "å TME102")
+ * aus den ersten 3 Zeilen jeder Seite. Globale Filter für Copyright etc.
+ * KEIN globales Zählen — verhindert falsche Filterung von Mechanik-Variablen (F1, S1, CH, CV).
+ */
+function cleanTextPerPage(pages: string[]): string {
+  return pages.map(pageText => {
+    const lines = pageText.split('\n').map(l => l.trim()).filter(Boolean);
+    const result: string[] = [];
+    let headerZone = true;  // Die ersten paar Zeilen pro Seite sind Header-Zone
+    let headerCount = 0;
+
+    for (const line of lines) {
+      // In der Header-Zone (max. 4 Zeilen) bekannte AKAD-Muster entfernen
+      if (headerZone && headerCount < 4) {
+        if (/^-?\s*\d{1,4}\s*-?$/.test(line)) { headerCount++; continue; }  // Seitenzahl
+        if (/^Kapitel\s+\d+$/i.test(line)) { headerCount++; continue; }      // "Kapitel 1"
+        if (/^å/.test(line)) { headerCount++; continue; }                        // "å TME102"
+        if (/^[A-Z]{2,6}\d{2,4}$/.test(line)) { headerCount++; continue; }   // "TME102"
+        // Erste echte Inhaltszeile → Header-Zone verlassen
+        headerZone = false;
+      }
+
+      // Globale Filter (gelten überall, nicht nur in Header-Zone)
+      if (/^(Einleitung\/Lernziele)$/.test(line)) continue;
+      if (/^Prof\.\s+Dr\./i.test(line)) continue;
+      if (/^Dr\.\s+[A-ZÄÖÜ]/.test(line) && line.length < 60) continue;
+      if (/^[©®]|^Copyright/i.test(line)) continue;
+      if (/^Art\.-Nr\./.test(line)) continue;  // AKAD Artikelnummer
+      if (/^K\d{4}$/.test(line)) continue;        // "K1113" etc.
+
+      result.push(line);
     }
-  }
-  const headers = new Set<string>();
-  for (const [line, count] of counts) {
-    if (count >= 4) headers.add(line);
-  }
-  return headers;
-}
-
-function cleanText(text: string): string {
-  const rawLines = text.split('\n').map(l => l.trim());
-  const runningHeaders = detectRunningHeaders(rawLines);
-
-  return rawLines
-    .filter(l => {
-      if (!l || l.length < 2) return false;
-      // Seitenzahlen
-      if (/^-?\s*\d{1,4}\s*-?$/.test(l)) return false;
-      if (/^(Seite|Page)\s+\d+/i.test(l)) return false;
-      // Modul-Codes wie TME102, BWL101
-      if (/^[A-Z]{2,6}\d{2,4}$/.test(l)) return false;
-      // AKAD-Header: "Kapitel N" und "å TME102"-Muster
-      if (/^Kapitel\s+\d+$/i.test(l)) return false;
-      if (/^å/.test(l)) return false;  // å TME102, åTME102, å allein — alle Varianten
-      if (/^[Å§†‡]$/.test(l)) return false;
-      // Abschnittsname-Header wie "Einleitung/Lernziele" ohne weiteren Text
-      if (/^(Einleitung\/Lernziele|Statik ebener Tragwerke|Ebene Fachwerke)$/.test(l)) return false;
-      // Autorenzeilen
-      if (/^Prof\.\s+Dr\./i.test(l)) return false;
-      if (/^Dr\.\s+[A-ZÄÖÜ]/.test(l) && l.length < 60) return false;
-      // Copyright
-      if (/^[©®]|^Copyright/i.test(l)) return false;
-      // Laufende Kopf-/Fußzeilen (wiederkehrend)
-      if (runningHeaders.has(l)) return false;
-      return true;
-    })
-    .join('\n');
+    return result.join('\n');
+  }).join('\n');
 }
 
 function splitIntoChapters(text: string, filename: string) {
@@ -218,11 +209,11 @@ export async function POST(request: NextRequest) {
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
     // PDF-Extraktion via unpdf (Vercel + Node.js kompatibel, kein Worker nötig)
-    // mergePages: false gibt Array pro Seite → Zeilenstruktur bleibt erhalten (wichtig für Heading-Erkennung)
+    // mergePages: false → Array pro Seite → per-page Header-Stripping möglich
     const { text: textRaw, totalPages } = await extractText(uint8, { mergePages: false });
-    const text = Array.isArray(textRaw) ? (textRaw as string[]).join('\n') : (textRaw as string);
+    const pages: string[] = Array.isArray(textRaw) ? (textRaw as string[]) : [(textRaw as string)];
 
-    const cleanedText = cleanText(text);
+    const cleanedText = cleanTextPerPage(pages);
     const documentId = generateId();
     const chaptersRaw = splitIntoChapters(cleanedText, file.name);
 
