@@ -10,10 +10,10 @@ interface AudioPlayerProps {
   speed: number;
   onSpeedChange: (speed: number) => void;
   startFromChar?: number; // wenn gesetzt → TTS startet ab dieser Position
-  seekToChar?: number | null; // reaktiv: TTS-Neustart ab dieser Zeichenposition
+  seekToChar?: { char: number; seq: number } | null; // reaktiv: TTS-Neustart
 }
 
-export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange, startFromChar, seekToChar }: AudioPlayerProps) {
+export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange, seekToChar }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -24,6 +24,7 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
   const ttsProgressRef = useRef(0);
   const ttsStartTimeRef = useRef(0);
   const ttsStartCharRef = useRef(0);
+  const ttsResumeFromRef = useRef(0); // base position when TTS started
   const ttsDurationRef = useRef(chapter.duration_seconds || 120);
 
   const hasAudio = !!chapter.audio_path;
@@ -41,40 +42,23 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
 
   useEffect(() => () => { stopTTS(); }, []);
 
-  // Wenn startFromChar sich ändert → TTS ab dieser Stelle neu starten
-  useEffect(() => {
-    if (startFromChar === undefined || startFromChar < 0) return;
-    const text = chapter.cleaned_text || '';
-    const dur = ttsDurationRef.current;
-    const charRatio = text.length > 0 ? startFromChar / text.length : 0;
-    const timePos = charRatio * dur;
-    ttsProgressRef.current = timePos;
-    setCurrentTime(timePos);
-    startTTS(timePos);
-    setIsPlaying(true);
-    setTtsPaused(false);
-  }, [startFromChar]);
-
   // seekToChar: reaktiver Seek aus dem PDF-Viewer (Klick auf Wort)
   useEffect(() => {
     if (seekToChar == null) return;
+    const { char: charIdx } = seekToChar;
+    const text = chapter.cleaned_text || '';
     if (hasAudio && audioRef.current) {
-      // Bei echtem Audio: Zeit-Position schätzen und springen
-      const text = chapter.cleaned_text || '';
       const dur = audioRef.current.duration || ttsDurationRef.current;
-      const ratio = text.length > 0 ? seekToChar / text.length : 0;
+      const ratio = text.length > 0 ? charIdx / text.length : 0;
       audioRef.current.currentTime = ratio * dur;
       audioRef.current.play().catch(() => {});
       setIsPlaying(true);
       return;
     }
-    // TTS: Neustart ab Zeichenposition
-    const text = chapter.cleaned_text || '';
+    // TTS: direkt ab Zeichenposition starten
     const dur = ttsDurationRef.current;
-    const ratio = text.length > 0 ? seekToChar / text.length : 0;
+    const ratio = text.length > 0 ? charIdx / text.length : 0;
     const timePos = ratio * dur;
-    ttsProgressRef.current = timePos;
-    setCurrentTime(timePos);
     startTTS(timePos);
     setIsPlaying(true);
     setTtsPaused(false);
@@ -129,10 +113,12 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
     };
     utterance.onerror = (e) => { if (e.error !== 'interrupted') { console.error('TTS:', e.error); setIsPlaying(false); } };
     window.speechSynthesis.speak(utterance);
-    ttsStartTimeRef.current = Date.now() - resumeFrom * 1000;
+    ttsResumeFromRef.current = resumeFrom;
+    ttsStartTimeRef.current = Date.now();
     ttsIntervalRef.current = setInterval(() => {
       const elapsed = (Date.now() - ttsStartTimeRef.current) / 1000;
-      const pos = Math.min(elapsed * speed, dur);
+      // resumeFrom + elapsed*speed so position is correct regardless of speed
+      const pos = Math.min(ttsResumeFromRef.current + elapsed * speed, dur);
       ttsProgressRef.current = pos; setCurrentTime(pos); setDuration(dur);
     }, 300);
   }
@@ -148,9 +134,11 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
       if (ttsIntervalRef.current) clearInterval(ttsIntervalRef.current);
     } else if (ttsPaused) {
       window.speechSynthesis.resume(); setTtsPaused(false); setIsPlaying(true);
-      ttsStartTimeRef.current = Date.now() - ttsProgressRef.current * 1000;
+      ttsResumeFromRef.current = ttsProgressRef.current;
+      ttsStartTimeRef.current = Date.now();
       ttsIntervalRef.current = setInterval(() => {
-        const pos = Math.min((Date.now() - ttsStartTimeRef.current) / 1000 * speed, ttsDurationRef.current);
+        const elapsed = (Date.now() - ttsStartTimeRef.current) / 1000;
+        const pos = Math.min(ttsResumeFromRef.current + elapsed * speed, ttsDurationRef.current);
         ttsProgressRef.current = pos; setCurrentTime(pos);
       }, 300);
     } else {

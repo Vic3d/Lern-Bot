@@ -119,27 +119,26 @@ export default function PDFViewer({
     chapterTextCacheRef.current = '';
   }, [chapterText]);
 
-  // ── Highlight logic ────────────────────────────────────────────────────────
+  // ── Highlight logic — ratio-based (avoids cleaned_text vs PDF-text coord mismatch) ──
   useEffect(() => {
     clearHighlight();
-    if (highlightCharIndex < 0 || !chapterText) return;
+    if (highlightCharIndex < 0 || !chapterText || !chapterText.length) return;
 
+    const allItems = textItemsRef.current;
+    if (!allItems.length) return;
+
+    // Only use items that belong to this chapter (at/after chapter start in PDF)
     const chStart = getChapterStart();
-    const pdfOffset = chStart + highlightCharIndex;
-    const items = textItemsRef.current;
-    if (!items.length) return;
+    const chItems = chStart >= 0
+      ? allItems.filter(it => it.globalStart >= chStart)
+      : allItems;
+    if (!chItems.length) return;
 
-    // Binary search for the item containing pdfOffset
-    let lo = 0, hi = items.length - 1, found = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (items[mid].globalEnd <= pdfOffset) lo = mid + 1;
-      else if (items[mid].globalStart > pdfOffset) hi = mid - 1;
-      else { found = mid; break; }
-    }
-    if (found < 0) found = Math.min(lo, items.length - 1);
+    // Convert char position in cleaned_text → ratio → item index in chapter items
+    const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
+    const targetIdx = Math.min(Math.floor(ratio * chItems.length), chItems.length - 1);
+    const item = chItems[targetIdx];
 
-    const item = items[found];
     if (item?.spanEl) {
       item.spanEl.classList.add('pdf-hl');
       highlightedSpanRef.current = item.spanEl;
@@ -366,7 +365,7 @@ export default function PDFViewer({
 
       // Click: seek TTS — find clicked word in cleaned_text
       const capturedItem = textItem;
-      span.addEventListener('click', () => {
+      span.addEventListener('click', (e) => { e.stopPropagation();
         const cb = onSeekToCharRef.current;
         if (!cb || !capturedItem) return;
         const ct = chapterTextRef.current || '';

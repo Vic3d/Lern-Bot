@@ -39,8 +39,9 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [bionicReading, setBionicReading] = useState(false);
   const [speed, setSpeed] = useState(1.0);
   const [resumePrompt, setResumePrompt] = useState<{ chapterIndex: number } | null>(null);
-  // TTS seek-to-char: set when user clicks a word in the PDF viewer
-  const [ttsSeekTarget, setTtsSeekTarget] = useState<number | null>(null);
+  // TTS seek-to-char: { char, seq } so same position can be re-triggered
+  const [ttsSeekTarget, setTtsSeekTarget] = useState<{ char: number; seq: number } | null>(null);
+  const seekSeqRef = useRef(0);
 
   const chapter = chapters[currentIndex] || null;
   const progress = chapters.length > 1 ? (currentIndex / (chapters.length - 1)) * 100 : 0;
@@ -74,6 +75,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     setCurrentIndex(index);
     setHighlightChar(-1);
     setTtsSeekTarget(null);
+    seekSeqRef.current = 0;
     saveProgress(params.id, index);
   }, [params.id]);
 
@@ -94,7 +96,8 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
 
   // Called when user clicks a word in the PDF viewer
   const handleSeekToChar = useCallback((charIdx: number) => {
-    setTtsSeekTarget(charIdx);
+    seekSeqRef.current += 1;
+    setTtsSeekTarget({ char: charIdx, seq: seekSeqRef.current });
   }, []);
 
   if (loading) return (
@@ -241,47 +244,79 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
             />
 
             {/* Chapter Nav */}
-            <div style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: '10px', padding: '14px' }}>
-              <h3 style={{ fontSize: '12px', fontWeight: 700, marginBottom: '10px', color: 'var(--text)' }}>Kapitel</h3>
-              <div style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '10px' }}>
-                {chapters.map((ch, i) => (
-                  <button
-                    key={ch.id}
-                    onClick={() => goToChapter(i)}
-                    style={{
-                      width: '100%', textAlign: 'left', padding: '7px 9px', marginBottom: '3px',
-                      background: i === currentIndex ? 'var(--navy)' : 'transparent',
-                      color: i === currentIndex ? 'white' : 'var(--text)',
-                      border: 'none', borderRadius: '5px', cursor: 'pointer',
-                      fontSize: '12px', fontWeight: i === currentIndex ? 600 : 400,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {i + 1}. {ch.title}
-                  </button>
-                ))}
+            <div style={{ background: 'var(--white)', border: '1px solid var(--border)', borderRadius: '12px', overflow: 'hidden' }}>
+              {/* Header */}
+              <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text)', margin: 0 }}>📚 Kapitel</h3>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', background: 'var(--off-white)', padding: '2px 8px', borderRadius: '10px', fontWeight: 600 }}>
+                  {currentIndex + 1} / {chapters.length}
+                </span>
               </div>
-              <div style={{ display: 'flex', gap: '6px' }}>
+
+              {/* Chapter list */}
+              <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
+                {chapters.map((ch, i) => {
+                  const isActive = i === currentIndex;
+                  const isDone = i < currentIndex;
+                  return (
+                    <button
+                      key={ch.id}
+                      onClick={() => goToChapter(i)}
+                      style={{
+                        width: '100%', textAlign: 'left',
+                        padding: '10px 14px',
+                        background: isActive ? 'var(--navy)' : 'transparent',
+                        color: isActive ? 'white' : isDone ? 'var(--text-muted)' : 'var(--text)',
+                        border: 'none',
+                        borderBottom: '1px solid var(--border)',
+                        cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', gap: '10px',
+                        transition: 'background 0.15s',
+                      }}
+                    >
+                      {/* Number badge */}
+                      <span style={{
+                        flexShrink: 0,
+                        width: '22px', height: '22px', borderRadius: '50%',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '10px', fontWeight: 700,
+                        background: isActive ? 'rgba(255,255,255,0.2)' : isDone ? '#d1fae5' : 'var(--off-white)',
+                        color: isActive ? 'white' : isDone ? '#059669' : 'var(--text-muted)',
+                      }}>
+                        {isDone ? '✓' : i + 1}
+                      </span>
+                      <span style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>
+                        {ch.title}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Prev / Next */}
+              <div style={{ display: 'flex', borderTop: '1px solid var(--border)' }}>
                 <button
                   onClick={() => currentIndex > 0 && goToChapter(currentIndex - 1)}
                   disabled={currentIndex === 0}
                   style={{
-                    flex: 1, padding: '7px', background: 'var(--off-white)',
-                    border: '1px solid var(--border)', borderRadius: '6px',
+                    flex: 1, padding: '10px', background: 'none',
+                    border: 'none', borderRight: '1px solid var(--border)',
                     cursor: currentIndex === 0 ? 'not-allowed' : 'pointer',
-                    fontSize: '12px', fontWeight: 600, opacity: currentIndex === 0 ? 0.4 : 1,
+                    fontSize: '13px', fontWeight: 600,
+                    color: currentIndex === 0 ? 'var(--text-muted)' : 'var(--navy)',
+                    opacity: currentIndex === 0 ? 0.4 : 1,
                   }}
                 >← Zurück</button>
                 <button
                   onClick={() => currentIndex < chapters.length - 1 && goToChapter(currentIndex + 1)}
                   disabled={currentIndex === chapters.length - 1}
                   style={{
-                    flex: 1, padding: '7px',
-                    background: currentIndex === chapters.length - 1 ? 'var(--border)' : 'var(--navy)',
-                    color: currentIndex === chapters.length - 1 ? 'var(--text)' : 'white',
-                    border: 'none', borderRadius: '6px',
+                    flex: 1, padding: '10px',
+                    background: currentIndex < chapters.length - 1 ? 'var(--navy)' : 'none',
+                    border: 'none',
                     cursor: currentIndex === chapters.length - 1 ? 'not-allowed' : 'pointer',
-                    fontSize: '12px', fontWeight: 600,
+                    fontSize: '13px', fontWeight: 600,
+                    color: currentIndex === chapters.length - 1 ? 'var(--text-muted)' : 'white',
                     opacity: currentIndex === chapters.length - 1 ? 0.4 : 1,
                   }}
                 >Weiter →</button>
