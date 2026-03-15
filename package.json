@@ -1,6 +1,6 @@
 {
   "name": "smart-pdf-reader",
-  "version": "0.3.1",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
