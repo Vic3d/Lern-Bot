@@ -32,9 +32,13 @@ function decodeRepeated(line: string): string {
 
 /** Prüft ob eine Zeile ein wiederholtes Encoding hat (mind. 2× selber Prefix) */
 function isRepeatedLine(line: string): boolean {
+  // 4x Einzelzeichen-Repetition (z.B. "1111", "SSSStttt") — immer erkennen
+  if (/(.)\1{3}/.test(line)) return true;
+  // Phrase-Repetition (z.B. "TitelTitelTitel") — min. 4 Zeichen um false positives zu vermeiden
+  // (verhindert z.B. "ge" in "gegensetzt" als false positive)
   const n = line.length;
-  if (n < 4) return false;
-  for (let unitLen = 1; unitLen <= Math.floor(n / 2); unitLen++) {
+  if (n < 8) return false;
+  for (let unitLen = 4; unitLen <= Math.floor(n / 2); unitLen++) {
     const unit = line.substring(0, unitLen);
     if (line.startsWith(unit + unit)) return true;
   }
@@ -125,8 +129,8 @@ function splitIntoChapters(text: string, filename: string) {
     // Dekodiere wiederholte Zeilen (AKAD 4x-Encoding)
     const decoded = isRepeatedLine(trimmed) ? decodeRepeated(trimmed) : trimmed;
 
-    // Reine Zahl = wartende Kapitelnummer (z.B. "1" aus "1111")
-    if (/^\d+$/.test(decoded) && isRepeatedLine(trimmed)) {
+    // Kapitelnummer (z.B. "1" aus "1111", oder "1.2" aus "1.21.21.21.2")
+    if (/^\d+(?:\.\d+)*$/.test(decoded) && isRepeatedLine(trimmed)) {
       pendingNumber = decoded;
       continue;
     }
@@ -212,7 +216,9 @@ export async function POST(request: NextRequest) {
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
     // PDF-Extraktion via unpdf (Vercel + Node.js kompatibel, kein Worker nötig)
-    const { text, totalPages } = await extractText(uint8, { mergePages: true });
+    // mergePages: false gibt Array pro Seite → Zeilenstruktur bleibt erhalten (wichtig für Heading-Erkennung)
+    const { text: textRaw, totalPages } = await extractText(uint8, { mergePages: false });
+    const text = Array.isArray(textRaw) ? (textRaw as string[]).join('\n') : (textRaw as string);
 
     const cleanedText = cleanText(text);
     const documentId = generateId();
