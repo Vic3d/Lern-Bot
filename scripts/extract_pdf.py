@@ -2,7 +2,7 @@
 """
 PDF Text Extraction via pdfplumber
 Usage: python3 scripts/extract_pdf.py <pdf_path>
-Output: JSON mit chapters
+Output: JSON mit chapters + start_page/end_page pro Kapitel
 """
 import sys
 import json
@@ -18,7 +18,7 @@ def is_noise(line: str) -> bool:
     l = line.strip()
     if not l:
         return True
-    if re.match(r'^-?\s*\d+\s*-?$', l):  # Seitenzahlen
+    if re.match(r'^-?\s*\d+\s*-?$', l):
         return True
     if re.match(r'^(Seite|Page)\s+\d+', l, re.IGNORECASE):
         return True
@@ -27,92 +27,116 @@ def is_noise(line: str) -> bool:
     return False
 
 
-def extract_text(pdf_path: str):
-    pages_text = []
-    with pdfplumber.open(pdf_path) as pdf:
-        num_pages = len(pdf.pages)
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                pages_text.append(t)
-
-    full_text = "\n".join(pages_text)
-    lines = full_text.split("\n")
-    cleaned = [clean_line(l) for l in lines if not is_noise(l)]
-    return "\n".join(cleaned), num_pages
-
-
 def clean_chapter_title(title: str) -> str:
-    """Remove trailing page numbers like '1.4 Statische Bestimmtheit 18' → '1.4 Statische Bestimmtheit'"""
     return re.sub(r'\s+\d+\s*$', '', title.strip())
 
 
-def split_chapters(text: str, filename: str):
-    # Überschriften erkennen: "1.1 Tragelemente", "2.3.1 Knotenpunktverfahren", etc.
-    # Muss im Format "x.y Titel" oder "x.y.z Titel" sein (Punkt-Notation nötig)
-    # Erlaubt nur Buchstaben, Leerzeichen, Umlaute, Bindestrich und /
-    heading_pattern = re.compile(
-        r'^('
-        r'\d+\.\d+(?:\.\d+)*\s+[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß /\-]{2,70}'  # 1.1 Titel
-        r'|\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-]{3,70}'  # 1 Titel (Großbuchstabe)
-        r'|Einleitung(?:\s*/\s*Lernziele)?'
-        r'|Einleitung\s*und\s*Lernziele'
-        r'|Zusammenfassung'
-        r'|Lernziele'
-        r')$'
-    )
+heading_pattern = re.compile(
+    r'^('
+    r'\d+\.\d+(?:\.\d+)*\s+[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß /\-]{2,70}'
+    r'|\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-]{3,70}'
+    r'|Einleitung(?:\s*/\s*Lernziele)?'
+    r'|Einleitung\s*und\s*Lernziele'
+    r'|Zusammenfassung'
+    r'|Lernziele'
+    r')$'
+)
 
-    lines = text.split("\n")
+
+def extract_text(pdf_path: str):
+    """
+    Gibt (page_lines, num_pages) zurück.
+    page_lines = [(page_num, line_text), ...] — jede Zeile mit ihrer Seitennummer
+    """
+    page_lines = []
+    num_pages = 0
+    with pdfplumber.open(pdf_path) as pdf:
+        num_pages = len(pdf.pages)
+        for page_num, page in enumerate(pdf.pages, 1):
+            t = page.extract_text()
+            if t:
+                for line in t.split('\n'):
+                    page_lines.append((page_num, line))
+    return page_lines, num_pages
+
+
+def split_chapters(page_lines, filename, num_pages):
+    """
+    Spaltet Text in Kapitel auf.
+    Speichert start_page und end_page pro Kapitel.
+    """
     chapters = []
     current_title = "Einleitung"
-    current_lines = []
+    current_items = []   # [(page_num, cleaned_line)]
     chapter_num = 0
 
-    for line in lines:
-        if heading_pattern.match(line) and len(" ".join(current_lines)) > 300:
-            if current_lines:
+    for page_num, raw_line in page_lines:
+        if is_noise(raw_line):
+            continue
+        line = clean_line(raw_line)
+        if not line:
+            continue
+
+        if heading_pattern.match(line) and len(" ".join(l for _, l in current_items)) > 300:
+            if current_items:
                 chapter_num += 1
-                body = "\n".join(current_lines).strip()
+                pages = [p for p, _ in current_items]
+                body = "\n".join(l for _, l in current_items).strip()
                 word_count = len(body.split())
                 chapters.append({
                     "chapter_num": chapter_num,
                     "title": clean_chapter_title(current_title),
                     "text": body,
                     "word_count": word_count,
-                    "duration_seconds": round(word_count / 2.5)
+                    "duration_seconds": round(word_count / 2.5),
+                    "start_page": min(pages),
+                    "end_page": max(pages),
                 })
-            current_title = line.strip()
-            current_lines = []
+            current_title = line
+            current_items = []
         else:
-            current_lines.append(line)
+            current_items.append((page_num, line))
 
     # Letztes Kapitel
-    if current_lines:
+    if current_items:
         chapter_num += 1
-        body = "\n".join(current_lines).strip()
+        pages = [p for p, _ in current_items]
+        body = "\n".join(l for _, l in current_items).strip()
         word_count = len(body.split())
         chapters.append({
             "chapter_num": chapter_num,
             "title": clean_chapter_title(current_title),
             "text": body,
             "word_count": word_count,
-            "duration_seconds": round(word_count / 2.5)
+            "duration_seconds": round(word_count / 2.5),
+            "start_page": min(pages) if pages else 1,
+            "end_page": max(pages) if pages else num_pages,
         })
 
-    # Fallback: wenn kein Kapitel erkannt → nach Wortanzahl splitten
-    if len(chapters) <= 1 and len(text.split()) > 1000:
-        words = text.split()
+    # Fallback: kein Kapitel erkannt → nach Wortanzahl splitten
+    if len(chapters) <= 1 and sum(len(l.split()) for _, l in page_lines) > 1000:
+        all_items = [(p, l) for p, l in page_lines if not is_noise(l) and clean_line(l)]
+        all_words = []
+        word_pages = []
+        for p, l in all_items:
+            ws = l.split()
+            all_words.extend(ws)
+            word_pages.extend([p] * len(ws))
+
         chunk_size = 1500
         chapters = []
-        for i in range(0, len(words), chunk_size):
-            chunk = " ".join(words[i:i + chunk_size])
+        for i in range(0, len(all_words), chunk_size):
+            chunk_words = all_words[i:i + chunk_size]
+            chunk_pages = word_pages[i:i + chunk_size]
             num = i // chunk_size + 1
             chapters.append({
                 "chapter_num": num,
                 "title": f"Teil {num}",
-                "text": chunk,
-                "word_count": len(words[i:i + chunk_size]),
-                "duration_seconds": round(len(words[i:i + chunk_size]) / 2.5)
+                "text": " ".join(chunk_words),
+                "word_count": len(chunk_words),
+                "duration_seconds": round(len(chunk_words) / 2.5),
+                "start_page": chunk_pages[0] if chunk_pages else 1,
+                "end_page": chunk_pages[-1] if chunk_pages else num_pages,
             })
 
     return chapters
@@ -127,13 +151,14 @@ if __name__ == "__main__":
     filename = pdf_path.split("/")[-1]
 
     try:
-        text, num_pages = extract_text(pdf_path)
-        chapters = split_chapters(text, filename)
+        page_lines, num_pages = extract_text(pdf_path)
+        full_text = "\n".join(l for _, l in page_lines if not is_noise(l))
+        chapters = split_chapters(page_lines, filename, num_pages)
 
         result = {
             "success": True,
             "pages": num_pages,
-            "total_chars": len(text),
+            "total_chars": len(full_text),
             "chapters_count": len(chapters),
             "chapters": chapters
         }

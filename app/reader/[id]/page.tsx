@@ -193,6 +193,8 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
             <PDFViewer
               pdfBytes={pdfBytes}
               chapterText={chapter?.cleaned_text}
+              startPage={chapter?.start_page}
+              endPage={chapter?.end_page}
               highlightCharIndex={highlightChar}
               onSeekToChar={handleSeekToChar}
             />

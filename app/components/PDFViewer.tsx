@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from 'react';
 interface PDFViewerProps {
   pdfBytes: Uint8Array;
   chapterText?: string;
+  startPage?: number;   // erste Seite des Kapitels (1-indexed)
+  endPage?: number;     // letzte Seite des Kapitels (1-indexed)
   highlightCharIndex?: number;
   onSeekToChar?: (charIndex: number) => void;
 }
@@ -18,15 +20,25 @@ interface TextItem {
   spanEl?: HTMLSpanElement;
 }
 
-// Sucht chapterText im fullPdfText — beide haben jetzt Leerzeichen, passt zusammen
+// Kein Text-Matching mehr nötig — Seiten-basiertes Filtering (startPage/endPage)
+
 function findChapterStart(fullText: string, chapterText: string): number {
   if (!chapterText || !fullText) return -1;
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
-  for (const len of [120, 60, 30]) {
-    const needle = norm(chapterText.substring(0, len));
-    if (needle.length < 10) continue;
-    const idx = norm(fullText).indexOf(needle);
-    if (idx >= 0) return idx;
+  const lengths = [120, 60, 30];
+  for (const len of lengths) {
+    const needle = chapterText.substring(0, len).trim();
+    if (!needle) continue;
+    const direct = fullText.indexOf(needle);
+    if (direct >= 0) return direct;
+    const normNeedle = needle.replace(/\s+/g, ' ');
+    const firstWord = normNeedle.split(' ')[0];
+    if (firstWord.length < 4) continue;
+    let pos = fullText.indexOf(firstWord);
+    while (pos >= 0) {
+      const slice = fullText.substring(pos, pos + len * 2).replace(/\s+/g, ' ');
+      if (slice.startsWith(normNeedle)) return pos;
+      pos = fullText.indexOf(firstWord, pos + 1);
+    }
   }
   return -1;
 }
@@ -34,6 +46,8 @@ function findChapterStart(fullText: string, chapterText: string): number {
 export default function PDFViewer({
   pdfBytes,
   chapterText = '',
+  startPage,
+  endPage,
   highlightCharIndex = -1,
   onSeekToChar,
 }: PDFViewerProps) {
@@ -53,16 +67,15 @@ export default function PDFViewer({
   const textItemsRef = useRef<TextItem[]>([]);
   const fullPdfTextRef = useRef(''); // MIT Leerzeichen — muss zu globalStart/End passen!
 
-  // Chapter cache — recomputed when chapterText changes
-  const chapterStartRef = useRef(-1);
-  const chapterEndRef = useRef(Infinity);
-  const chItemsRef = useRef<TextItem[]>([]); // gecacht, nicht bei jedem Event neu filtern
+  // Chapter cache — recomputed when chapterText/startPage/endPage changes
+  const chItemsRef = useRef<TextItem[]>([]);
   const chapterTextCacheRef = useRef('');
+  const startPageRef = useRef<number | undefined>(undefined);
+  const endPageRef = useRef<number | undefined>(undefined);
 
   // Highlight tracking
   const highlightedSpanRef = useRef<HTMLSpanElement | null>(null);
-  const lastMatchedItemRef = useRef(0);
-  const lastHighlightCharRef = useRef(-1);
+  const charSpanMapRef = useRef<Array<{charIdx: number; itemIdx: number}>>([]);
 
   // Observers
   const lazyObserverRef = useRef<IntersectionObserver | null>(null);
@@ -76,6 +89,8 @@ export default function PDFViewer({
   chapterTextRef.current = chapterText;
   const onSeekToCharRef = useRef(onSeekToChar);
   onSeekToCharRef.current = onSeekToChar;
+  startPageRef.current = startPage;
+  endPageRef.current = endPage;
 
   // ── PDF.js von CDN laden ───────────────────────────────────────────────────
   useEffect(() => {
@@ -108,67 +123,37 @@ export default function PDFViewer({
 
   // Kapitel gewechselt → Cache + Pointer zurücksetzen + zu Kapitelanfang scrollen
   useEffect(() => {
-    if (!chapterText) return;
+    charSpanMapRef.current = [];
     rebuildChapterCache(chapterText);
-    lastMatchedItemRef.current = 0;
-    lastHighlightCharRef.current = -1;
-    // Zum ersten Item des Kapitels scrollen
     scrollToChapterStart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chapterText]);
+  }, [chapterText, startPage, endPage]);
 
-  // ── Highlight ──────────────────────────────────────────────────────────────
+  // ── Highlight: charSpanMap binary-search ──────────────────────────────────
   useEffect(() => {
     clearHighlight();
     if (highlightCharIndex < 0 || !chapterText) return;
-
-    const useItems = chItemsRef.current;
-    if (!useItems.length) return;
-
-    // Rückwärts-Seek erkannt → Pointer neu setzen
-    const prevChar = lastHighlightCharRef.current;
-    if (highlightCharIndex < prevChar - 150) {
-      const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
-      lastMatchedItemRef.current = Math.floor(ratio * useItems.length);
+    const chItems = chItemsRef.current;
+    if (!chItems.length) return;
+    if (!charSpanMapRef.current.length) buildCharSpanMap(chapterText, chItems);
+    const map = charSpanMapRef.current;
+    if (!map.length) return;
+    let lo = 0, hi = map.length - 1, best = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (map[mid].charIdx <= highlightCharIndex) { best = mid; lo = mid + 1; }
+      else hi = mid - 1;
     }
-    lastHighlightCharRef.current = highlightCharIndex;
-
-    // Aktuell gesprochenes Wort aus cleaned_text
-    let wS = highlightCharIndex;
-    let wE = highlightCharIndex;
-    while (wS > 0 && chapterText[wS - 1] !== ' ') wS--;
-    while (wE < chapterText.length && chapterText[wE] !== ' ') wE++;
-    const word = chapterText.slice(wS, wE).toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
-
-    // Vorwärts-Suche (max 30 Items, nie rückwärts)
-    const from = lastMatchedItemRef.current;
-    const to = Math.min(useItems.length - 1, from + 30);
-    let foundIdx = from; // Fallback: bleib am aktuellen Pointer
-
-    if (word.length >= 3) {
-      for (let j = from; j <= to; j++) {
-        const s = (useItems[j].str || '').toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
-        if (s.length >= 2 && (s.includes(word) || word.startsWith(s.substring(0, Math.min(s.length, 4))))) {
-          foundIdx = j;
-          break;
-        }
-      }
-    }
-
-    lastMatchedItemRef.current = Math.min(foundIdx, useItems.length - 1);
-    const item = useItems[lastMatchedItemRef.current];
-
+    const item = chItems[Math.min(map[best].itemIdx, chItems.length - 1)];
     if (item?.spanEl) {
       item.spanEl.classList.add('pdf-hl');
       highlightedSpanRef.current = item.spanEl;
-      // Nur scrollen wenn Span nicht sichtbar
       const rect = item.spanEl.getBoundingClientRect();
-      const vH = window.innerHeight;
-      if (rect.top < 80 || rect.bottom > vH - 80) {
+      if (rect.top < 80 || rect.bottom > window.innerHeight - 80) {
         item.spanEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightCharIndex, chapterText]);
 
   // Cleanup
@@ -180,29 +165,61 @@ export default function PDFViewer({
   }, []);
 
   // ── Kapitel-Cache aufbauen ─────────────────────────────────────────────────
-  function rebuildChapterCache(ct: string) {
-    if (ct === chapterTextCacheRef.current) return; // kein Rebuild nötig
+  function rebuildChapterCache(ct: string, sp?: number, ep?: number) {
     chapterTextCacheRef.current = ct;
-
     const allItems = textItemsRef.current;
-    if (!allItems.length || !ct) {
-      chapterStartRef.current = -1;
-      chapterEndRef.current = Infinity;
-      chItemsRef.current = allItems;
-      return;
+    if (!allItems.length) { chItemsRef.current = []; return; }
+
+    let chItems: TextItem[];
+    if (sp !== undefined && ep !== undefined) {
+      // Seiten-basiertes Filtering — zuverlässiger als Text-Matching
+      chItems = allItems.filter(it => it.pageNum >= sp! && it.pageNum <= ep!);
+    } else {
+      // Fallback: Text-Matching (für ältere Daten ohne start_page/end_page)
+      const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const full = norm(fullPdfTextRef.current);
+      let chStart = -1;
+      for (const len of [100, 50, 25]) {
+        const needle = norm(ct.substring(0, len));
+        if (needle.length < 8) continue;
+        const idx = full.indexOf(needle);
+        if (idx >= 0) { chStart = idx; break; }
+      }
+      if (chStart >= 0) {
+        const firstItem = allItems.find(it => it.globalStart >= chStart);
+        const startP = firstItem?.pageNum ?? 1;
+        const lastItem = [...allItems].reverse().find(it => it.globalStart <= chStart + ct.length * 1.8);
+        const endP = lastItem?.pageNum ?? allItems[allItems.length - 1].pageNum;
+        chItems = allItems.filter(it => it.pageNum >= startP && it.pageNum <= endP);
+      } else {
+        chItems = allItems;
+      }
     }
-
-    const chStart = findChapterStart(fullPdfTextRef.current, ct);
-    const chEnd = chStart >= 0 ? chStart + Math.floor(ct.length * 1.6) : Infinity;
-
-    chapterStartRef.current = chStart;
-    chapterEndRef.current = chEnd;
-
-    const chItems = allItems.filter(it =>
-      it.globalStart >= Math.max(0, chStart) && it.globalStart < chEnd
-    );
-    // Fallback: wenn zu wenig Items → alle nehmen (single-chapter PDF)
     chItemsRef.current = chItems.length >= 5 ? chItems : allItems;
+    buildCharSpanMap(ct, chItemsRef.current);
+  }
+
+  // ── Wort-Alignierung: chapterText → chItems (einmalig) ─────────────────────
+  function buildCharSpanMap(ct: string, items: TextItem[]) {
+    if (!ct || !items.length) { charSpanMapRef.current = []; return; }
+    const map: Array<{charIdx: number; itemIdx: number}> = [];
+    const wordRe = /[a-zA-ZäöüÄÖÜß]{3,}/g;
+    let m: RegExpExecArray | null;
+    let lastIdx = 0;
+    while ((m = wordRe.exec(ct)) !== null) {
+      const word = m[0].toLowerCase();
+      const charIdx = m.index;
+      const end = Math.min(items.length - 1, lastIdx + 20);
+      let found = -1;
+      for (let j = lastIdx; j <= end; j++) {
+        const s = (items[j].str || '').toLowerCase().replace(/[^a-zäöüß]/gi, '');
+        if (s.length >= 2 && (s.includes(word) || word.startsWith(s.substring(0, Math.min(s.length, 5))))) {
+          found = j; break;
+        }
+      }
+      if (found >= 0) { map.push({ charIdx, itemIdx: found }); lastIdx = found; }
+    }
+    charSpanMapRef.current = map;
   }
 
   // ── Zum Kapitelanfang scrollen ─────────────────────────────────────────────
@@ -275,9 +292,8 @@ export default function PDFViewer({
 
     // Kapitel-Cache mit aktuellem chapterText aufbauen
     chapterTextCacheRef.current = '';
-    rebuildChapterCache(chapterTextRef.current);
-    lastMatchedItemRef.current = 0;
-    lastHighlightCharRef.current = -1;
+    rebuildChapterCache(chapterTextRef.current, startPageRef.current, endPageRef.current);
+    charSpanMapRef.current = [];
   }
 
   // ── Layout builder ─────────────────────────────────────────────────────────
@@ -463,8 +479,7 @@ export default function PDFViewer({
         }
 
         // Highlight-Pointer auf Klick-Position setzen
-        lastMatchedItemRef.current = Math.max(0, idxInCh >= 0 ? idxInCh - 1 : 0);
-        lastHighlightCharRef.current = charInChapter - 10;
+        charSpanMapRef.current = []; // force realign after seek
 
         cb(Math.max(0, Math.min(charInChapter, ct.length - 1)));
       });
