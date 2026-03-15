@@ -10,6 +10,8 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [chapters, setChapters] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
+  const [generatingAudio, setGeneratingAudio] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchChapters();
@@ -35,6 +37,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     if (currentChapterIndex < chapters.length - 1) {
       setCurrentChapterIndex(currentChapterIndex + 1);
       setChapter(chapters[currentChapterIndex + 1]);
+      setAudioError(null);
     }
   };
 
@@ -42,12 +45,46 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     if (currentChapterIndex > 0) {
       setCurrentChapterIndex(currentChapterIndex - 1);
       setChapter(chapters[currentChapterIndex - 1]);
+      setAudioError(null);
     }
   };
 
   const goToChapter = (index: number) => {
     setCurrentChapterIndex(index);
     setChapter(chapters[index]);
+    setAudioError(null);
+  };
+
+  const handleGenerateAudio = async () => {
+    if (!chapter || generatingAudio) return;
+    setGeneratingAudio(true);
+    setAudioError(null);
+    try {
+      const response = await fetch(`/api/chapters/${chapter.id}/generate-audio`, {
+        method: 'POST',
+      });
+      const data = await response.json();
+      if (data.success) {
+        // Update chapter in local state
+        const updatedChapter = {
+          ...chapter,
+          audio_path: data.audio_path,
+          audio_status: 'ready',
+          duration_seconds: data.duration_seconds || chapter.duration_seconds,
+        };
+        setChapter(updatedChapter);
+        const updatedChapters = chapters.map((ch) =>
+          ch.id === chapter.id ? updatedChapter : ch
+        );
+        setChapters(updatedChapters);
+      } else {
+        setAudioError(data.error || 'Audio-Generierung fehlgeschlagen');
+      }
+    } catch (err: any) {
+      setAudioError(`Fehler: ${err.message}`);
+    } finally {
+      setGeneratingAudio(false);
+    }
   };
 
   if (loading) {
@@ -74,6 +111,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   }
 
   const progress = ((currentChapterIndex + 1) / chapters.length) * 100;
+  const isAudioPending = chapter.audio_status === 'pending' || !chapter.audio_path;
 
   return (
     <main style={{ minHeight: '100vh', background: 'var(--white)' }}>
@@ -154,9 +192,64 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
           alignItems: 'start'
         }}>
           
-          {/* Left: Player + Transcript */}
+          {/* Left: Audio section + Transcript */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-            <AudioPlayer chapter={chapter} documentId={params.id} />
+
+            {/* Audio: generate button or player */}
+            {isAudioPending ? (
+              <div style={{
+                background: 'var(--off-white)',
+                borderRadius: '12px',
+                padding: '32px',
+                border: '1px solid var(--border)',
+                textAlign: 'center'
+              }}>
+                <p style={{ color: 'var(--text-muted)', marginBottom: '20px', fontSize: '15px' }}>
+                  🎵 <strong>{chapter.title}</strong>
+                </p>
+                <p style={{ color: 'var(--text-muted)', marginBottom: '24px', fontSize: '14px' }}>
+                  Kein Audio vorhanden. Jetzt mit Google TTS generieren (Deutsch)?
+                </p>
+                {audioError && (
+                  <div style={{
+                    background: '#fef2f2',
+                    border: '1px solid #fca5a5',
+                    color: '#dc2626',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    marginBottom: '16px',
+                    fontSize: '13px'
+                  }}>
+                    ⚠️ {audioError}
+                  </div>
+                )}
+                <button
+                  onClick={handleGenerateAudio}
+                  disabled={generatingAudio}
+                  style={{
+                    padding: '14px 28px',
+                    background: generatingAudio ? 'var(--border)' : 'var(--navy)',
+                    color: generatingAudio ? 'var(--text-muted)' : 'var(--white)',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: generatingAudio ? 'not-allowed' : 'pointer',
+                    fontWeight: 700,
+                    fontSize: '15px',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  {generatingAudio ? '⏳ Generiere Audio...' : '🔊 Audio generieren'}
+                </button>
+                {generatingAudio && (
+                  <p style={{ color: 'var(--text-muted)', marginTop: '12px', fontSize: '13px' }}>
+                    Kann je nach Textlänge 10–60 Sekunden dauern...
+                  </p>
+                )}
+              </div>
+            ) : (
+              <AudioPlayer chapter={chapter} documentId={params.id} />
+            )}
+
             <Transcript text={chapter.cleaned_text} />
           </div>
 
@@ -212,6 +305,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                     }
                   }}
                 >
+                  {ch.audio_status === 'ready' ? '🔊 ' : '📄 '}
                   {ch.title}
                 </button>
               ))}

@@ -1,62 +1,140 @@
 #!/usr/bin/env python3
-"""Extract text from PDF using pdfplumber"""
-
+"""
+PDF Text Extraction via pdfplumber
+Usage: python3 scripts/extract_pdf.py <pdf_path>
+Output: JSON mit chapters
+"""
 import sys
 import json
+import re
 import pdfplumber
-from pathlib import Path
 
-def extract_pdf(pdf_path: str) -> dict:
-    """Extract text from PDF and return chapters"""
-    
+
+def clean_line(line: str) -> str:
+    return line.strip()
+
+
+def is_noise(line: str) -> bool:
+    l = line.strip()
+    if not l:
+        return True
+    if re.match(r'^-?\s*\d+\s*-?$', l):  # Seitenzahlen
+        return True
+    if re.match(r'^(Seite|Page)\s+\d+', l, re.IGNORECASE):
+        return True
+    if len(l) < 2:
+        return True
+    return False
+
+
+def extract_text(pdf_path: str):
+    pages_text = []
+    with pdfplumber.open(pdf_path) as pdf:
+        num_pages = len(pdf.pages)
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                pages_text.append(t)
+
+    full_text = "\n".join(pages_text)
+    lines = full_text.split("\n")
+    cleaned = [clean_line(l) for l in lines if not is_noise(l)]
+    return "\n".join(cleaned), num_pages
+
+
+def clean_chapter_title(title: str) -> str:
+    """Remove trailing page numbers like '1.4 Statische Bestimmtheit 18' → '1.4 Statische Bestimmtheit'"""
+    return re.sub(r'\s+\d+\s*$', '', title.strip())
+
+
+def split_chapters(text: str, filename: str):
+    # Überschriften erkennen: "1.1 Tragelemente", "2.3.1 Knotenpunktverfahren", etc.
+    # Muss im Format "x.y Titel" oder "x.y.z Titel" sein (Punkt-Notation nötig)
+    # Erlaubt nur Buchstaben, Leerzeichen, Umlaute, Bindestrich und /
+    heading_pattern = re.compile(
+        r'^(\d+\.\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-]{3,70}'
+        r'|Einleitung(?:\s*/\s*Lernziele)?'
+        r'|Einleitung\s*und\s*Lernziele'
+        r'|Zusammenfassung'
+        r')$'
+    )
+
+    lines = text.split("\n")
     chapters = []
-    
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            print(f"PDF has {len(pdf.pages)} pages", file=sys.stderr)
-            
-            # For MVP: treat each page as a section, then group into chapters
-            page_texts = []
-            for i, page in enumerate(pdf.pages):
-                text = page.extract_text()
-                if text:
-                    # Clean boilerplate
-                    lines = [line.strip() for line in text.split('\n') if line.strip()]
-                    # Remove page numbers, headers, footers
-                    filtered = [l for l in lines if len(l) > 3 and not l.isdigit()]
-                    page_texts.append('\n'.join(filtered))
-            
-            # Group pages into chapters (for MVP: every 5 pages = 1 chapter)
-            chapter_size = 5
-            for i in range(0, len(page_texts), chapter_size):
-                chapter_num = i // chapter_size + 1
-                chapter_text = '\n\n'.join(page_texts[i:i+chapter_size])
-                
-                if chapter_text.strip():
-                    chapters.append({
-                        'chapter_num': chapter_num,
-                        'title': f'Chapter {chapter_num}',
-                        'cleaned_text': chapter_text.strip(),
-                        'word_count': len(chapter_text.split())
-                    })
-        
-        return {
-            'success': True,
-            'chapters': chapters,
-            'total_chapters': len(chapters)
-        }
-    
-    except Exception as e:
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    current_title = "Einleitung"
+    current_lines = []
+    chapter_num = 0
 
-if __name__ == '__main__':
+    for line in lines:
+        if heading_pattern.match(line) and len(" ".join(current_lines)) > 300:
+            if current_lines:
+                chapter_num += 1
+                body = "\n".join(current_lines).strip()
+                word_count = len(body.split())
+                chapters.append({
+                    "chapter_num": chapter_num,
+                    "title": clean_chapter_title(current_title),
+                    "text": body,
+                    "word_count": word_count,
+                    "duration_seconds": round(word_count / 2.5)
+                })
+            current_title = line.strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    # Letztes Kapitel
+    if current_lines:
+        chapter_num += 1
+        body = "\n".join(current_lines).strip()
+        word_count = len(body.split())
+        chapters.append({
+            "chapter_num": chapter_num,
+            "title": clean_chapter_title(current_title),
+            "text": body,
+            "word_count": word_count,
+            "duration_seconds": round(word_count / 2.5)
+        })
+
+    # Fallback: wenn kein Kapitel erkannt → nach Wortanzahl splitten
+    if len(chapters) <= 1 and len(text.split()) > 1000:
+        words = text.split()
+        chunk_size = 1500
+        chapters = []
+        for i in range(0, len(words), chunk_size):
+            chunk = " ".join(words[i:i + chunk_size])
+            num = i // chunk_size + 1
+            chapters.append({
+                "chapter_num": num,
+                "title": f"{filename} — Teil {num}",
+                "text": chunk,
+                "word_count": len(words[i:i + chunk_size]),
+                "duration_seconds": round(len(words[i:i + chunk_size]) / 2.5)
+            })
+
+    return chapters
+
+
+if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({'success': False, 'error': 'No PDF path provided'}))
+        print(json.dumps({"error": "Usage: extract_pdf.py <pdf_path>"}))
         sys.exit(1)
-    
+
     pdf_path = sys.argv[1]
-    result = extract_pdf(pdf_path)
-    print(json.dumps(result))
+    filename = pdf_path.split("/")[-1]
+
+    try:
+        text, num_pages = extract_text(pdf_path)
+        chapters = split_chapters(text, filename)
+
+        result = {
+            "success": True,
+            "pages": num_pages,
+            "total_chars": len(text),
+            "chapters_count": len(chapters),
+            "chapters": chapters
+        }
+        print(json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"success": False, "error": str(e)}))
+        sys.exit(1)

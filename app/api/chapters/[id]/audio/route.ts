@@ -7,8 +7,9 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const chaptersFile = path.join(process.cwd(), 'data', 'chapters.json');
-    
+    const baseDir = process.cwd();
+    const chaptersFile = path.join(baseDir, 'data', 'chapters.json');
+
     if (!fs.existsSync(chaptersFile)) {
       return NextResponse.json({ error: 'Chapter not found' }, { status: 404 });
     }
@@ -16,15 +17,24 @@ export async function GET(
     const chapters = JSON.parse(fs.readFileSync(chaptersFile, 'utf-8'));
     const chapter = chapters.find((ch: any) => ch.id === params.id);
 
-    if (!chapter || !chapter.audio_path) {
-      return NextResponse.json({ error: 'Audio not found' }, { status: 404 });
+    if (!chapter) {
+      return NextResponse.json({ error: 'Chapter not found' }, { status: 404 });
     }
 
-    const audioPath = path.join(process.cwd(), 'public', chapter.audio_path.replace(/^\//, ''));
+    if (!chapter.audio_path) {
+      return NextResponse.json(
+        { error: 'Audio not yet generated', status: chapter.audio_status },
+        { status: 202 }  // 202 Accepted = noch ausstehend
+      );
+    }
+
+    const audioPath = path.join(baseDir, 'public', chapter.audio_path.replace(/^\//, ''));
 
     if (!fs.existsSync(audioPath)) {
-      // Return 404 but don't error - audio might still be generating
-      return NextResponse.json({ error: 'Audio file not ready' }, { status: 404 });
+      return NextResponse.json(
+        { error: 'Audio file missing', audio_path: chapter.audio_path },
+        { status: 404 }
+      );
     }
 
     const audioBuffer = fs.readFileSync(audioPath);
@@ -33,9 +43,11 @@ export async function GET(
       headers: {
         'Content-Type': 'audio/mpeg',
         'Content-Length': audioBuffer.length.toString(),
-        'Cache-Control': 'public, max-age=31536000'
+        'Cache-Control': 'public, max-age=86400',
+        'Accept-Ranges': 'bytes'
       }
     });
+
   } catch (error) {
     console.error('Error serving audio:', error);
     return NextResponse.json(
