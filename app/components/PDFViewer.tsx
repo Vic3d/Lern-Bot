@@ -364,34 +364,55 @@ export default function PDFViewer({
       const textItem = itemMap.get(i);
       if (textItem) textItem.spanEl = span;
 
-      // Click: seek TTS to this position
+      // Click: seek TTS — find clicked word in cleaned_text
       const capturedItem = textItem;
       span.addEventListener('click', () => {
         const cb = onSeekToCharRef.current;
         if (!cb || !capturedItem) return;
         const ct = chapterTextRef.current || '';
         if (!ct) return;
-        const chStart = getChapterStart();
+
+        // Strategy: search for the clicked word/phrase in cleaned_text.
+        // If found multiple times, pick the occurrence whose position ratio
+        // best matches the span's ratio within all PDF items.
+        const clickedStr = (capturedItem.str || '').trim();
+        if (!clickedStr) return;
+
         const allItems = textItemsRef.current;
-        const fullLen = fullPdfTextRef.current.length;
-        let charInChapter: number;
-        if (chStart >= 0 && capturedItem.globalStart >= chStart) {
-          // Direct offset (works when chapterText spacing matches PDF text)
-          const raw = capturedItem.globalStart - chStart;
-          if (raw >= 0 && raw < ct.length * 1.5) {
-            charInChapter = Math.min(raw, ct.length - 1);
-          } else {
-            // Fallback: ratio within chapter items
-            const chItems = allItems.filter(it => it.globalStart >= chStart);
-            const idxInChapter = chItems.findIndex(it => it === capturedItem);
-            const ratio = chItems.length > 1 ? idxInChapter / (chItems.length - 1) : 0;
-            charInChapter = Math.floor(ratio * (ct.length - 1));
-          }
-        } else {
-          // No chapter start found — ratio over full PDF
-          const ratio = fullLen > 0 ? capturedItem.globalStart / fullLen : 0;
-          charInChapter = Math.floor(ratio * ct.length);
+        const spanRatio = allItems.length > 1
+          ? allItems.findIndex(it => it === capturedItem) / (allItems.length - 1)
+          : 0;
+        const targetCharApprox = Math.floor(spanRatio * ct.length);
+
+        // Find all occurrences of clickedStr in cleaned_text
+        const occurrences: number[] = [];
+        let searchFrom = 0;
+        while (true) {
+          const pos = ct.indexOf(clickedStr, searchFrom);
+          if (pos < 0) break;
+          occurrences.push(pos);
+          searchFrom = pos + 1;
         }
+
+        let charInChapter: number;
+        if (occurrences.length === 0) {
+          // Word not found verbatim — try first significant word in span
+          const words = clickedStr.split(/\s+/).filter(w => w.length > 3);
+          let found = -1;
+          for (const w of words) {
+            const p = ct.indexOf(w);
+            if (p >= 0) { found = p; break; }
+          }
+          charInChapter = found >= 0 ? found : targetCharApprox;
+        } else if (occurrences.length === 1) {
+          charInChapter = occurrences[0];
+        } else {
+          // Pick occurrence closest to the estimated ratio position
+          charInChapter = occurrences.reduce((best, pos) =>
+            Math.abs(pos - targetCharApprox) < Math.abs(best - targetCharApprox) ? pos : best
+          );
+        }
+
         cb(Math.max(0, Math.min(charInChapter, ct.length - 1)));
       });
 
