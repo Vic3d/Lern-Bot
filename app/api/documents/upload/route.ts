@@ -75,8 +75,8 @@ function cleanText(text: string): string {
       if (/^[A-Z]{2,6}\d{2,4}$/.test(l)) return false;
       // AKAD-Header: "Kapitel N" und "å TME102"-Muster
       if (/^Kapitel\s+\d+$/i.test(l)) return false;
-      if (/^å\s+[A-Z]/.test(l)) return false;
-      if (/^[åÅ§†‡]$/.test(l)) return false;
+      if (/^å/.test(l)) return false;  // å TME102, åTME102, å allein — alle Varianten
+      if (/^[Å§†‡]$/.test(l)) return false;
       // Abschnittsname-Header wie "Einleitung/Lernziele" ohne weiteren Text
       if (/^(Einleitung\/Lernziele|Statik ebener Tragwerke|Ebene Fachwerke)$/.test(l)) return false;
       // Autorenzeilen
@@ -100,7 +100,7 @@ function splitIntoChapters(text: string, filename: string) {
   let pendingNumber: string | null = null;  // Wartende Kapitelnummer (z.B. "1")
 
   // Heading-Pattern (nach Dekodierung)
-  const chapterHeadingRe = /^(\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort)$/;
+  const chapterHeadingRe = /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Stichwortverzeichnis|Antworten zu den Kontrollfragen)$/;
   // TOC-Einträge: enden auf Seitenzahl
   const isTocEntry = (s: string) => /\s\d{1,3}$/.test(s) && /^\d/.test(s);
 
@@ -154,17 +154,18 @@ function splitIntoChapters(text: string, filename: string) {
       headingTitle = decoded;
     }
 
-    if (isHeading && currentLines.join('').length > 200) {
-      flush();
+    if (isHeading) {
+      // Immer flushen wenn Inhalt vorhanden — nie als Body-Text hinzufügen
+      if (currentLines.length > 0 || chapters.length > 0) {
+        flush();
+      }
       currentTitle = headingTitle;
       currentLines = [];
-    } else if (isHeading && chapters.length === 0 && currentLines.length === 0) {
-      currentTitle = headingTitle;
     } else {
       // Body-Text: nur dekodierte Version einfügen wenn sinnvoll
       const bodyText = isRepeatedLine(trimmed) ? decoded : trimmed;
-      // Wiederholte reine Überschriften-Zeilen im Body überspringen
-      if (!isRepeatedLine(trimmed) || bodyText.length > 3) {
+      // Sehr kurze dekodierte Reste (z.B. "ge" aus false positive) überspringen
+      if (bodyText.length > 3) {
         currentLines.push(bodyText);
       }
     }
