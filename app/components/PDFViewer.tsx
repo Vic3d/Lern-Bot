@@ -19,23 +19,32 @@ interface TextItem {
 }
 
 function findChapterStart(fullText: string, chapterText: string): number {
-  if (!chapterText || !fullText) return 0;
+  if (!chapterText || !fullText) return -1;
 
-  const lengths = [150, 80, 40];
+  const lengths = [120, 60, 30];
   for (const len of lengths) {
-    const needle = chapterText.substring(0, len);
+    const needle = chapterText.substring(0, len).trim();
+    if (!needle) continue;
 
     // Direct match
     const direct = fullText.indexOf(needle);
     if (direct >= 0) return direct;
 
-    // Normalized whitespace match
-    const normFull = fullText.replace(/\s+/g, ' ');
+    // Normalized: collapse whitespace, then search
+    // WICHTIG: Index muss im Original-String sein, nicht im normalisierten
     const normNeedle = needle.replace(/\s+/g, ' ');
-    const normIdx = normFull.indexOf(normNeedle);
-    if (normIdx >= 0) return normIdx;
+    // Suche Zeichen-für-Zeichen mit Whitespace-Toleranz
+    const firstWord = normNeedle.split(' ')[0];
+    if (firstWord.length < 4) continue;
+    let pos = fullText.indexOf(firstWord);
+    while (pos >= 0) {
+      // Prüfe ob ab pos der normalisierte Text passt
+      const slice = fullText.substring(pos, pos + len * 2).replace(/\s+/g, ' ');
+      if (slice.startsWith(normNeedle)) return pos;
+      pos = fullText.indexOf(firstWord, pos + 1);
+    }
   }
-  return 0;
+  return -1; // nicht gefunden → -1 statt 0 (0 wäre falscher Match)
 }
 
 export default function PDFViewer({
@@ -50,6 +59,7 @@ export default function PDFViewer({
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [scale, setScale] = useState(1.3);
+  const [fitWidth, setFitWidth] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,6 +78,9 @@ export default function PDFViewer({
   const highlightedSpanRef = useRef<HTMLSpanElement | null>(null);
   const lastMatchedItemRef = useRef(0);   // forward-only pointer in chItems
   const lastHighlightCharRef = useRef(-1); // detects backward seek (user clicked elsewhere)
+
+  // Chapter items cache (recomputed when chapter changes, not on every highlight)
+  const chItemsRef = useRef<TextItem[]>([]);
 
   // Observers
   const lazyObserverRef = useRef<IntersectionObserver | null>(null);
@@ -115,12 +128,14 @@ export default function PDFViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale]);
 
-  // Reset on chapter change
+  // Reset on chapter change + rebuild chItems cache
   useEffect(() => {
     chapterStartRef.current = -1;
     chapterTextCacheRef.current = '';
     lastMatchedItemRef.current = 0;
     lastHighlightCharRef.current = -1;
+    // chItems werden bei nächstem Highlight neu berechnet (textItems könnte noch leer sein)
+    chItemsRef.current = [];
   }, [chapterText]);
 
   // ── Highlight: bounded chapter items + forward-only word search ──
@@ -131,13 +146,16 @@ export default function PDFViewer({
     const allItems = textItemsRef.current;
     if (!allItems.length) return;
 
-    // Kapitel-Items begrenzen — verhindert Sprünge auf andere Kapitel/Seiten
-    const chStart = getChapterStart();
-    const chEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
-    const chItems = allItems.filter(it =>
-      it.globalStart >= Math.max(0, chStart) && it.globalStart < chEnd
-    );
-    const useItems = chItems.length >= 5 ? chItems : allItems;
+    // chItems gecacht — nur neu berechnen wenn noch leer (nach Kapitelwechsel)
+    if (!chItemsRef.current.length) {
+      const chStart = getChapterStart();
+      const chEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
+      const filtered = allItems.filter(it =>
+        it.globalStart >= Math.max(0, chStart) && it.globalStart < chEnd
+      );
+      chItemsRef.current = filtered.length >= 5 ? filtered : allItems;
+    }
+    const useItems = chItemsRef.current;
     if (!useItems.length) return;
 
     // Rückwärts-Seek: User hat zu früherer Stelle gesprungen → Pointer zurücksetzen
@@ -188,6 +206,20 @@ export default function PDFViewer({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightCharIndex, chapterText]);
+
+  // Fit-to-Width: scale berechnen damit PDF-Breite ins Scroll-Container passt
+  useEffect(() => {
+    if (!fitWidth || !cachedPagesRef.current.length) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const containerW = container.clientWidth - 40; // 40 = padding
+    const firstPage = cachedPagesRef.current[0];
+    if (!firstPage) return;
+    const baseViewport = firstPage.getViewport({ scale: 1.0 });
+    const newScale = Math.min(3.0, Math.max(0.5, containerW / baseViewport.width));
+    setScale(parseFloat(newScale.toFixed(2)));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitWidth]);
 
   // Cleanup observers on unmount
   useEffect(() => {
@@ -248,7 +280,14 @@ export default function PDFViewer({
     cachedPagesRef.current = pages;
     cachedTextContentsRef.current = textContents;
     textItemsRef.current = textItems;
-    fullPdfTextRef.current = textItems.map(i => i.str).join('');
+    // fullPdfText MIT Leerzeichen bauen — muss mit globalStart-Offsets übereinstimmen
+    // (globalStart wird mit trailingSpace gezählt, daher braucht fullPdfText auch Spaces)
+    const parts: string[] = [];
+    for (const it of textItems) {
+      parts.push(it.str);
+      if (!it.str.endsWith(' ')) parts.push(' ');
+    }
+    fullPdfTextRef.current = parts.join('');
     chapterStartRef.current = -1;
     chapterTextCacheRef.current = '';
   }
@@ -265,6 +304,10 @@ export default function PDFViewer({
 
     // Clear all spanEl refs (they'll be re-linked when pages render)
     for (const item of textItemsRef.current) item.spanEl = undefined;
+    // Reset highlight pointer + chapter cache (spanEls invalidated after rebuild)
+    lastMatchedItemRef.current = 0;
+    lastHighlightCharRef.current = -1;
+    chItemsRef.current = []; // force recompute after spanEls are re-linked
 
     container.innerHTML = '';
     injectCSS();
@@ -487,7 +530,7 @@ export default function PDFViewer({
       return chapterStartRef.current;
     }
     const start = findChapterStart(fullPdfTextRef.current, ct);
-    chapterStartRef.current = start;
+    chapterStartRef.current = start; // -1 wenn nicht gefunden
     chapterTextCacheRef.current = ct;
     return start;
   }
@@ -535,27 +578,28 @@ export default function PDFViewer({
       <div style={{
         display: 'flex', alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '8px 12px', background: '#3d3f41',
+        padding: '6px 12px', background: '#3d3f41',
         flexShrink: 0, gap: '8px',
       }}>
-        <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.7)', whiteSpace: 'nowrap' }}>
-          Seite {currentPage} / {totalPages}
+        {/* Seiten-Anzeige */}
+        <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.65)', whiteSpace: 'nowrap', minWidth: '70px' }}>
+          {currentPage} / {totalPages}
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+
+        {/* Zoom Controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <button onClick={() => { setFitWidth(false); setScale(s => parseFloat(Math.max(0.5, s - 0.15).toFixed(2))); }} style={tb}>−</button>
+          <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.7)', minWidth: '36px', textAlign: 'center' }}>
+            {Math.round(scale * 100)}%
+          </span>
+          <button onClick={() => { setFitWidth(false); setScale(s => parseFloat(Math.min(3.0, s + 0.15).toFixed(2))); }} style={tb}>+</button>
           <button
-            onClick={() => setScale(s => parseFloat(Math.max(0.5, s - 0.2).toFixed(1)))}
-            style={tb}
-          >−</button>
-          <span style={{
-            fontSize: '11px', color: 'rgba(255,255,255,0.7)',
-            minWidth: '38px', textAlign: 'center',
-          }}>{Math.round(scale * 100)}%</span>
-          <button
-            onClick={() => setScale(s => parseFloat(Math.min(3.0, s + 0.2).toFixed(1)))}
-            style={tb}
-          >+</button>
-          <button onClick={() => setScale(1.3)} style={{ ...tb, fontSize: '10px' }}>
-            Reset
+            onClick={() => { setFitWidth(f => !f); }}
+            title="Auf Fensterbreite anpassen"
+            style={{ ...tb, background: fitWidth ? 'rgba(232,184,0,0.4)' : 'rgba(255,255,255,0.15)', fontSize: '12px' }}
+          >⊡</button>
+          <button onClick={() => { setFitWidth(false); setScale(1.3); }} style={{ ...tb, fontSize: '10px', color: 'rgba(255,255,255,0.5)' }}>
+            1:1
           </button>
         </div>
       </div>
