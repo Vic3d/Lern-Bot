@@ -9,9 +9,10 @@ interface AudioPlayerProps {
   onEnded?: () => void;
   speed: number;
   onSpeedChange: (speed: number) => void;
+  startFromChar?: number; // wenn gesetzt → TTS startet ab dieser Position
 }
 
-export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange }: AudioPlayerProps) {
+export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange, startFromChar }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -38,6 +39,20 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
   }, [chapter.id]);
 
   useEffect(() => () => { stopTTS(); }, []);
+
+  // Wenn startFromChar sich ändert → TTS ab dieser Stelle neu starten
+  useEffect(() => {
+    if (startFromChar === undefined || startFromChar < 0) return;
+    const text = chapter.cleaned_text || '';
+    const dur = ttsDurationRef.current;
+    const charRatio = text.length > 0 ? startFromChar / text.length : 0;
+    const timePos = charRatio * dur;
+    ttsProgressRef.current = timePos;
+    setCurrentTime(timePos);
+    startTTS(timePos);
+    setIsPlaying(true);
+    setTtsPaused(false);
+  }, [startFromChar]);
 
   useEffect(() => {
     const audio = audioRef.current;

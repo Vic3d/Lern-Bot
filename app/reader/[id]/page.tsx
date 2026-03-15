@@ -34,6 +34,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
+  const [pdfClickChar, setPdfClickChar] = useState<number>(-1);
   const [viewMode, setViewMode] = useState<ViewMode>('pdf');
   const [highlightChar, setHighlightChar] = useState(-1);
   const [bionicReading, setBionicReading] = useState(false);
@@ -81,6 +82,11 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     setHighlightChar(-1);
     saveProgress(params.id, index);
   }, [params.id]);
+
+  const handleTextClick = useCallback((charIndex: number) => {
+    setHighlightChar(charIndex);
+    setPdfClickChar(charIndex);
+  }, []);
 
   const handleBoundary = useCallback((charIndex: number) => {
     setHighlightChar(charIndex);
@@ -151,7 +157,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
         {/* Links: PDF oder Text */}
         <div style={{ overflow: 'hidden', height: '100%' }}>
           {viewMode === 'pdf' && pdfBytes ? (
-            <PDFViewer pdfBytes={pdfBytes} currentPage={pdfPage} onPageChange={setPdfPage} />
+            <PDFViewer pdfBytes={pdfBytes} chapterText={chapter.cleaned_text || ""} highlightCharIndex={highlightChar} onTextClick={handleTextClick} />
           ) : (
             <div style={{ height: '100%', overflowY: 'auto', background: 'var(--white)', padding: '32px' }}>
               {resumePrompt && (
@@ -188,6 +194,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
             <AudioPlayer
               chapter={chapter}
               documentId={params.id}
+              startFromChar={pdfClickChar}
               onBoundary={handleBoundary}
               onEnded={() => { if (currentIndex < chapters.length - 1) setTimeout(() => goToChapter(currentIndex + 1), 800); }}
               speed={speed}
