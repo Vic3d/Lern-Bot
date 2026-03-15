@@ -78,7 +78,8 @@ function cleanTextPerPage(pages: string[]): string {
 
       // Globale Filter (gelten überall, auch außerhalb Header-Zone)
       if (/^å/.test(line)) continue;                                           // "å TME102" überall
-      if (/^(Einleitung\/Lernziele|Kapitel\s+\d+)$/i.test(line)) continue;    // laufende Abschnittsheader
+      // Laufende Abschnittsheader (erscheinen auf jeder Seite des Abschnitts)
+      if (/^(Einleitung\/Lernziele|Kapitel\s+\d+|Zusammenfassung|Literaturverzeichnis|Stichwortverzeichnis|Antworten zu)$/i.test(line)) continue;
       if (/^Prof\.\s+Dr\./i.test(line)) continue;
       if (/^Dr\.\s+[A-ZÄÖÜ]/.test(line) && line.length < 60) continue;
       if (/^[©®]|^Copyright/i.test(line)) continue;
