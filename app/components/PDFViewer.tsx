@@ -374,40 +374,47 @@ export default function PDFViewer({
 
         // Strategy: search for the clicked word/phrase in cleaned_text.
         // If found multiple times, pick the occurrence whose position ratio
-        // best matches the span's ratio within all PDF items.
+        // best matches the span's ratio within the chapter items (not full PDF).
         const clickedStr = (capturedItem.str || '').trim();
         if (!clickedStr) return;
 
         const allItems = textItemsRef.current;
-        const spanRatio = allItems.length > 1
-          ? allItems.findIndex(it => it === capturedItem) / (allItems.length - 1)
-          : 0;
+        // Use chapter-relative ratio: only items at/after chapter start
+        const chStart = getChapterStart();
+        const chItems = allItems.filter(it => it.globalStart >= chStart);
+        const idxInCh = chItems.findIndex(it => it === capturedItem);
+        const spanRatio = chItems.length > 1 && idxInCh >= 0
+          ? idxInCh / (chItems.length - 1)
+          : (allItems.length > 1 ? allItems.findIndex(it => it === capturedItem) / (allItems.length - 1) : 0);
         const targetCharApprox = Math.floor(spanRatio * ct.length);
 
-        // Find all occurrences of clickedStr in cleaned_text
+        // Find all occurrences of clickedStr in cleaned_text (case-insensitive)
+        const ctLower = ct.toLowerCase();
+        const needleLower = clickedStr.toLowerCase();
         const occurrences: number[] = [];
         let searchFrom = 0;
         while (true) {
-          const pos = ct.indexOf(clickedStr, searchFrom);
+          const pos = ctLower.indexOf(needleLower, searchFrom);
           if (pos < 0) break;
           occurrences.push(pos);
           searchFrom = pos + 1;
+          if (occurrences.length > 50) break; // safety
         }
 
         let charInChapter: number;
         if (occurrences.length === 0) {
-          // Word not found verbatim — try first significant word in span
-          const words = clickedStr.split(/\s+/).filter(w => w.length > 3);
+          // Not found verbatim — try longest significant word from span
+          const words = clickedStr.split(/[\s\-,.;:]+/).filter(w => w.length > 3);
           let found = -1;
-          for (const w of words) {
-            const p = ct.indexOf(w);
+          for (const w of words.sort((a,b) => b.length - a.length)) {
+            const p = ctLower.indexOf(w.toLowerCase());
             if (p >= 0) { found = p; break; }
           }
           charInChapter = found >= 0 ? found : targetCharApprox;
         } else if (occurrences.length === 1) {
           charInChapter = occurrences[0];
         } else {
-          // Pick occurrence closest to the estimated ratio position
+          // Pick occurrence closest to chapter-relative ratio position
           charInChapter = occurrences.reduce((best, pos) =>
             Math.abs(pos - targetCharApprox) < Math.abs(best - targetCharApprox) ? pos : best
           );
