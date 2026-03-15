@@ -166,8 +166,8 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
         {/* Speed Slider */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '16px' }}>🐢</span>
-          <input type="range" min="0.5" max="2.5" step="0.1" value={speed}
-            onChange={(e) => { const s = parseFloat(e.target.value); onSpeedChange(s); if (isPlaying && !hasAudio) startTTS(ttsProgressRef.current); }}
+          <input type="range" min="0" max="7" step="1" value={(() => { const steps=[0.5,0.75,1.0,1.25,1.5,1.75,2.0,2.5]; const idx=steps.indexOf(speed); return idx>=0?idx:2; })()}
+            onChange={(e) => { const steps=[0.5,0.75,1.0,1.25,1.5,1.75,2.0,2.5]; const s=steps[parseInt(e.target.value)]; onSpeedChange(s); if (isPlaying && !hasAudio) startTTS(ttsProgressRef.current); }}
             style={{ flex: 1, accentColor: 'var(--gold)' }}
           />
           <span style={{ fontSize: '16px' }}>🐇</span>
