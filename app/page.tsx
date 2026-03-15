@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import DocumentList from './components/DocumentList';
 import DocumentUpload from './components/DocumentUpload';
+import { extractPDF } from '@/lib/pdfExtract';
 
 const STORAGE_KEY = 'lernbot_documents';
 const CHAPTERS_KEY_PREFIX = 'lernbot_chapters_';
@@ -47,28 +48,16 @@ export default function Home() {
   }, []);
 
   const handleUpload = async (file: File) => {
-    const formData = new FormData();
-    formData.append('file', file);
     setLoading(true);
     setUploadError(null);
 
     try {
-      const response = await fetch('/api/documents/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await response.json();
-
-      if (!data.success) {
-        setUploadError(data.error || 'Upload fehlgeschlagen');
-        return;
-      }
-
-      // In localStorage speichern
-      saveDocumentToStorage(data.document, data.chapters);
+      // Client-seitige Extraktion — kein Server nötig, funktioniert auf Vercel
+      const { document, chapters } = await extractPDF(file);
+      saveDocumentToStorage(document, chapters);
       setDocuments(getDocumentsFromStorage());
     } catch (error: any) {
-      setUploadError(`Fehler: ${error.message}`);
+      setUploadError(`Fehler beim Lesen der PDF: ${error.message}`);
       console.error('Upload error:', error);
     } finally {
       setLoading(false);

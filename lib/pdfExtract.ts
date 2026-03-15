@@ -1,5 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { extractText } from 'unpdf';
+/**
+ * Client-side PDF Extraction via pdfjs-dist
+ * Läuft im Browser — kein Server nötig.
+ */
 
 function generateId() {
   return Math.random().toString(36).substring(2, 15);
@@ -18,7 +20,7 @@ function cleanText(text: string): string {
     .join('\n');
 }
 
-function splitIntoChapters(text: string, filename: string) {
+function splitIntoChapters(text: string, filename: string, docId: string) {
   const headingPattern = /^(\d+[\.\d]*\s+[A-ZÄÖÜ][^\n]{3,80}|Einleitung.*|Zusammenfassung.*)$/;
   const lines = text.split('\n');
   const chapters: any[] = [];
@@ -34,6 +36,7 @@ function splitIntoChapters(text: string, filename: string) {
         const wordCount = body.split(/\s+/).length;
         chapters.push({
           id: generateId(),
+          document_id: docId,
           chapter_num: chapterNum,
           title: currentTitle,
           cleaned_text: body,
@@ -51,12 +54,14 @@ function splitIntoChapters(text: string, filename: string) {
     }
   }
 
+  // Letztes Kapitel
   if (currentLines.length > 0) {
     chapterNum++;
     const body = currentLines.join('\n').trim();
     const wordCount = body.split(/\s+/).length;
     chapters.push({
       id: generateId(),
+      document_id: docId,
       chapter_num: chapterNum,
       title: currentTitle,
       cleaned_text: body,
@@ -68,7 +73,7 @@ function splitIntoChapters(text: string, filename: string) {
     });
   }
 
-  // Fallback: zu wenig Kapitel → nach Wortanzahl splitten
+  // Fallback: nach Wortanzahl splitten
   if (chapters.length <= 1) {
     const words = text.split(/\s+/);
     const chunkSize = 1500;
@@ -79,6 +84,7 @@ function splitIntoChapters(text: string, filename: string) {
       const wordCount = words.slice(i, i + chunkSize).length;
       result.push({
         id: generateId(),
+        document_id: docId,
         chapter_num: num,
         title: `${filename} — Teil ${num}`,
         cleaned_text: chunk,
@@ -95,60 +101,45 @@ function splitIntoChapters(text: string, filename: string) {
   return chapters;
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const formData = await request.formData();
-    const file = formData.get('file') as File;
+export async function extractPDF(file: File): Promise<{
+  document: any;
+  chapters: any[];
+}> {
+  const arrayBuffer = await file.arrayBuffer();
+  const uint8 = new Uint8Array(arrayBuffer);
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided', success: false }, { status: 400 });
-    }
+  // pdfjs dynamisch laden (nur client-side)
+  const pdfjs = await import('pdfjs-dist');
 
-    if (!file.name.endsWith('.pdf')) {
-      return NextResponse.json({ error: 'Only PDF files are supported', success: false }, { status: 400 });
-    }
+  // Worker per CDN laden (vermeidet import.meta.url / webpack-Konflikte)
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const pdf = await pdfjs.getDocument({ data: uint8 }).promise;
 
-    // PDF-Extraktion via unpdf (Vercel + Node.js kompatibel, kein Worker nötig)
-    const { text, totalPages } = await extractText(uint8, { mergePages: true });
-
-    const cleanedText = cleanText(text);
-    const documentId = generateId();
-    const chaptersRaw = splitIntoChapters(cleanedText, file.name);
-
-    const chapters = chaptersRaw.map(ch => ({
-      ...ch,
-      document_id: documentId
-    }));
-
-    const document = {
-      id: documentId,
-      filename: file.name,
-      chapters_count: chapters.length,
-      progress: 0,
-      last_accessed: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-      status: 'ready',
-      extraction: `${totalPages} Seiten, ${cleanedText.length} Zeichen, ${chapters.length} Kapitel`
-    };
-
-    console.log(`[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${totalPages} Seiten`);
-
-    return NextResponse.json({
-      success: true,
-      document,
-      chapters,
-      message: `"${file.name}" hochgeladen — ${chapters.length} Kapitel extrahiert.`
-    });
-
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error(`[UPLOAD ERROR] ${errorMsg}`);
-    return NextResponse.json(
-      { success: false, error: 'Upload failed', details: errorMsg },
-      { status: 500 }
-    );
+  let fullText = '';
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item: any) => ('str' in item ? item.str : ''))
+      .join(' ');
+    fullText += pageText + '\n';
   }
+
+  const cleanedText = cleanText(fullText);
+  const docId = generateId();
+  const chapters = splitIntoChapters(cleanedText, file.name, docId);
+
+  const document = {
+    id: docId,
+    filename: file.name,
+    chapters_count: chapters.length,
+    progress: 0,
+    last_accessed: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+    status: 'ready',
+    extraction: `${pdf.numPages} Seiten, ${cleanedText.length} Zeichen, ${chapters.length} Kapitel`
+  };
+
+  return { document, chapters };
 }
