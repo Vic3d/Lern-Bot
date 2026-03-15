@@ -121,7 +121,7 @@ export default function PDFViewer({
     lastHlIdxRef.current = 0;
   }, [chapterText]);
 
-  // ── Highlight logic — bounded chapter items + word-match sticky search ──
+  // ── Highlight: forward-only word search (no chStart needed, no backward jumps) ──
   useEffect(() => {
     clearHighlight();
     if (highlightCharIndex < 0 || !chapterText || !chapterText.length) return;
@@ -129,43 +129,44 @@ export default function PDFViewer({
     const allItems = textItemsRef.current;
     if (!allItems.length) return;
 
-    const chStart = getChapterStart();
+    // Word at current TTS boundary
+    let wStart = highlightCharIndex;
+    let wEnd = highlightCharIndex;
+    while (wStart > 0 && !/\s/.test(chapterText[wStart - 1])) wStart--;
+    while (wEnd < chapterText.length && !/\s/.test(chapterText[wEnd])) wEnd++;
+    const word = chapterText.slice(wStart, wEnd).toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
 
-    // WICHTIG: nur Items dieses Kapitels — chStart bis chStart + ~chapterLength
-    // Verhindert Sprünge auf andere Kapitel/Seiten
-    const chEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
-    const chItems = allItems.filter(it =>
-      it.globalStart >= Math.max(0, chStart) && it.globalStart < chEnd
-    );
-    const useItems = chItems.length >= 5 ? chItems : allItems;
-    if (!useItems.length) return;
-
-    // Ratio-basierter Näherungswert
+    // Progress ratio in chapter (0–1)
     const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
-    const approxIdx = Math.min(Math.floor(ratio * useItems.length), useItems.length - 1);
+    const approxGlobal = Math.floor(ratio * allItems.length);
 
-    // Erstes Wort an der aktuellen TTS-Position (aus cleaned_text)
-    const snippet = chapterText.substring(highlightCharIndex, highlightCharIndex + 25).trim();
-    const wordAt = snippet.split(/[\s,.:;!?()[\]]/)[0].toLowerCase().replace(/[^a-zäöüß]/gi, '');
+    // Detect seek: if ratio jumped far from lastHlIdxRef → reset starting point
+    const lastGlobal = lastHlIdxRef.current;
+    const expectedFromLast = lastGlobal + 5; // normal forward progress
+    const isSeeked = Math.abs(approxGlobal - lastGlobal) > 60;
 
-    // Sticky-Search: Fenster um lastIdx + approxIdx — bevorzugt Vorwärtsbewegung
-    const lastIdx = lastHlIdxRef.current;
-    const winStart = Math.max(0, Math.min(lastIdx, approxIdx) - 2);
-    const winEnd = Math.min(useItems.length - 1, Math.max(lastIdx + 1, approxIdx) + 12);
+    // Search start: after last found position (forward only), or approxGlobal after seek
+    const searchFrom = isSeeked
+      ? Math.max(0, approxGlobal - 15)
+      : Math.max(lastGlobal, Math.max(0, approxGlobal - 5));
+    const searchEnd = Math.min(allItems.length - 1, searchFrom + 60);
 
-    let bestIdx = approxIdx;
-    if (wordAt.length >= 3) {
-      for (let j = winStart; j <= winEnd; j++) {
-        const s = (useItems[j].str || '').toLowerCase().replace(/[^a-zäöüß]/gi, '');
-        if (s.includes(wordAt) || (s.length > 2 && wordAt.includes(s))) {
-          bestIdx = j;
+    let foundIdx = -1;
+    if (word.length >= 3) {
+      for (let j = searchFrom; j <= searchEnd; j++) {
+        const s = (allItems[j].str || '').toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
+        if (s.length >= 2 && (s.includes(word) || word.includes(s))) {
+          foundIdx = j;
           break;
         }
       }
     }
-    lastHlIdxRef.current = bestIdx;
 
-    const item = useItems[bestIdx];
+    // Fallback: use approxGlobal if word not found
+    if (foundIdx < 0) foundIdx = Math.max(searchFrom, approxGlobal);
+    lastHlIdxRef.current = foundIdx;
+
+    const item = allItems[Math.min(foundIdx, allItems.length - 1)];
     if (item?.spanEl) {
       item.spanEl.classList.add('pdf-hl');
       highlightedSpanRef.current = item.spanEl;
