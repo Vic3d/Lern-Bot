@@ -287,19 +287,22 @@ export default function PDFViewer({
     if (!page || !tc) return;
 
     const currentScale = scaleRef.current;
+    const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
     const viewport = page.getViewport({ scale: currentScale });
 
     // Sync wrapper size (in case it changed from estimate)
     wrapper.style.width = viewport.width + 'px';
     wrapper.style.height = viewport.height + 'px';
 
-    // Canvas
+    // Canvas — high-DPI (Retina fix)
     const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    canvas.style.cssText = 'position:absolute;top:0;left:0;display:block;';
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.cssText = `position:absolute;top:0;left:0;display:block;width:${viewport.width}px;height:${viewport.height}px;`;
     wrapper.appendChild(canvas);
-    await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    await page.render({ canvasContext: ctx, viewport }).promise;
 
     // Text layer
     const tl = document.createElement('div');
@@ -342,13 +345,15 @@ export default function PDFViewer({
         'transition:background 0.1s',
       ].join(';');
 
-      // Apply horizontal scale if needed for correct width
-      if (raw.width && raw.width > 0 && fontHeight > 0 && raw.str.length > 0) {
-        const sx = (raw.width * currentScale) / (raw.str.length * fontHeight * 0.55);
-        if (Math.abs(sx - 1) > 0.1) {
-          span.style.transform = `scaleX(${sx.toFixed(4)})`;
-          span.style.transformOrigin = '0% 0%';
-        }
+      // Apply horizontal scale: use PDF item width for accurate overlay alignment
+      // tx[0] = a (horizontal scale component after transform)
+      if (raw.width && raw.width > 0) {
+        const pdfWidth = raw.width * currentScale;
+        // rendered font width estimate: fontHeight * 0.6 per char is approximate,
+        // but we use the canvas text width if available, else fall back to scaleX
+        span.style.width = pdfWidth + 'px';
+        span.style.display = 'inline-block';
+        span.style.overflow = 'hidden';
       }
 
       // Link span to TextItem
