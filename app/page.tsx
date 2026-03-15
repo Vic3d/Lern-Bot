@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import DocumentList from './components/DocumentList';
 import DocumentUpload from './components/DocumentUpload';
-import { extractPDF } from '@/lib/pdfExtract';
+import AuthButton from './components/AuthButton';
+import { extractPDF, ExtractProgress } from '@/lib/pdfExtract';
 import { savePDF, deletePDF } from '@/lib/pdfStorage';
 
 const STORAGE_KEY = 'lernbot_documents';
@@ -42,21 +43,22 @@ export default function Home() {
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<ExtractProgress | null>(null);
 
   useEffect(() => {
-    // Aus localStorage laden
     setDocuments(getDocumentsFromStorage());
   }, []);
 
   const handleUpload = async (file: File) => {
     setLoading(true);
     setUploadError(null);
+    setUploadProgress(null);
 
     try {
-      // Client-seitige Extraktion — kein Server nötig, funktioniert auf Vercel
-      // PDF-Bytes für Viewer in IndexedDB speichern
       const arrayBuffer = await file.arrayBuffer();
-      const { document, chapters } = await extractPDF(file);
+      const { document, chapters } = await extractPDF(file, (progress) => {
+        setUploadProgress(progress);
+      });
       await savePDF(document.id, arrayBuffer);
       saveDocumentToStorage(document, chapters);
       setDocuments(getDocumentsFromStorage());
@@ -65,6 +67,7 @@ export default function Home() {
       console.error('Upload error:', error);
     } finally {
       setLoading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -73,6 +76,23 @@ export default function Home() {
     deletePDF(docId).catch(() => {});
     setDocuments(getDocumentsFromStorage());
   };
+
+  const progressLabel = (() => {
+    if (!uploadProgress) return 'Verarbeitung läuft...';
+    if (uploadProgress.stage === 'reading') {
+      return `Seite ${uploadProgress.pagesProcessed} / ${uploadProgress.pagesTotal} wird gelesen...`;
+    }
+    if (uploadProgress.stage === 'processing') {
+      return 'Kapitel werden erkannt...';
+    }
+    return 'Fertig!';
+  })();
+
+  const progressPercent = uploadProgress
+    ? uploadProgress.stage === 'processing' || uploadProgress.stage === 'done'
+      ? 100
+      : Math.round((uploadProgress.pagesProcessed / Math.max(uploadProgress.pagesTotal, 1)) * 100)
+    : 0;
 
   return (
     <main style={{ minHeight: '100vh', background: 'var(--white)' }}>
@@ -113,10 +133,11 @@ export default function Home() {
               justifyContent: 'center',
               fontSize: '24px'
             }}>📚</span>
-            Smart PDF Reader
+            LearnFlow
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.9.5</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <AuthButton />
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)' }}>v1.0.0</span>
           </div>
         </div>
       </header>
@@ -140,6 +161,45 @@ export default function Home() {
         <div style={{ marginBottom: '2rem' }}>
           <DocumentUpload onUpload={handleUpload} loading={loading} />
         </div>
+
+        {/* Loading Progress */}
+        {loading && (
+          <div style={{
+            background: '#eff6ff',
+            border: '1px solid #bfdbfe',
+            borderRadius: '10px',
+            padding: '16px 20px',
+            marginBottom: '2rem',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
+              <span className="spinner spinner-dark" style={{
+                borderColor: 'rgba(27,58,140,0.2)',
+                borderTopColor: 'var(--navy)',
+              }} />
+              <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--navy)' }}>
+                PDF wird analysiert...
+              </span>
+              <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                {progressLabel}
+              </span>
+            </div>
+            {/* Progress bar */}
+            <div style={{
+              height: '6px',
+              background: '#dbeafe',
+              borderRadius: '3px',
+              overflow: 'hidden',
+            }}>
+              <div style={{
+                height: '100%',
+                background: 'var(--navy)',
+                borderRadius: '3px',
+                width: loading && !uploadProgress ? '15%' : `${progressPercent}%`,
+                transition: 'width 0.3s ease',
+              }} />
+            </div>
+          </div>
+        )}
 
         {/* Error */}
         {uploadError && (

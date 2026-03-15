@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Smart PDF Reader",
+  title: "LearnFlow",
   description: "Audio learning platform for PDFs",
 };
 

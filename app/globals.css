@@ -109,3 +109,49 @@ input[type="range"]::-moz-range-thumb {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--navy);
 }
+
+/* ===== Reader Layout — Mobile Responsive ===== */
+.reader-body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  height: 100vh;
+  padding-top: 63px;
+}
+
+@media (max-width: 767px) {
+  .reader-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .reader-sidebar {
+    border-left: none !important;
+    border-top: 1px solid var(--border);
+    height: auto !important;
+  }
+
+  .reader-main {
+    height: 60vh;
+  }
+}
+
+/* ===== Loading Spinner ===== */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.spinner-dark {
+  border-color: rgba(27,58,140,0.2);
+  border-top-color: var(--navy);
+}
+

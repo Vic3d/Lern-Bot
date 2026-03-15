@@ -262,31 +262,88 @@ function buildChapters(lines: LineItem[], filename: string) {
   return chapters;
 }
 
+const MAX_FILE_SIZE_MB = 50;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const file = formData.get('file') as File;
+    const file = formData.get('file') as File | null;
 
+    // ── Validation ──────────────────────────────────────────────────────────
     if (!file) {
-      return NextResponse.json({ error: 'No file provided', success: false }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Keine Datei angegeben. Bitte eine PDF-Datei hochladen.', success: false },
+        { status: 400 }
+      );
     }
 
-    if (!file.name.endsWith('.pdf')) {
-      return NextResponse.json({ error: 'Only PDF files are supported', success: false }, { status: 400 });
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      return NextResponse.json(
+        { error: `Ungültiger Dateityp "${file.type || 'unbekannt'}". Nur PDF-Dateien werden unterstützt.`, success: false },
+        { status: 400 }
+      );
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+      return NextResponse.json(
+        { error: `Datei zu groß (${sizeMB} MB). Maximale Dateigröße: ${MAX_FILE_SIZE_MB} MB.`, success: false },
+        { status: 413 }
+      );
+    }
+
+    if (file.size === 0) {
+      return NextResponse.json(
+        { error: 'Die hochgeladene Datei ist leer.', success: false },
+        { status: 400 }
+      );
+    }
+
+    // ── Extraction ──────────────────────────────────────────────────────────
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(await file.arrayBuffer());
+    } catch {
+      return NextResponse.json(
+        { error: 'Datei konnte nicht gelesen werden. Bitte erneut versuchen.', success: false },
+        { status: 400 }
+      );
+    }
+
+    // Basic PDF header check (%PDF-)
+    if (buffer.length < 5 || buffer.toString('ascii', 0, 5) !== '%PDF-') {
+      return NextResponse.json(
+        { error: 'Die Datei ist keine gültige PDF (fehlendes %PDF-Header). Möglicherweise beschädigt.', success: false },
+        { status: 400 }
+      );
+    }
+
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-    const lines = await extractPDFLayout(uint8);
+    let lines: Awaited<ReturnType<typeof extractPDFLayout>>;
+    try {
+      lines = await extractPDFLayout(uint8);
+    } catch (extractErr) {
+      const msg = extractErr instanceof Error ? extractErr.message : String(extractErr);
+      console.error(`[UPLOAD] Extraction failed for "${file.name}": ${msg}`);
+      return NextResponse.json(
+        { error: `Textextraktion fehlgeschlagen: ${msg}. Das PDF könnte passwortgeschützt oder beschädigt sein.`, success: false },
+        { status: 422 }
+      );
+    }
+
+    if (!lines.length) {
+      return NextResponse.json(
+        { error: 'Kein Text in der PDF gefunden. Das Dokument könnte gescannt/bildbasiert sein und enthält keinen extrahierbaren Text.', success: false },
+        { status: 422 }
+      );
+    }
+
+    // ── Build result ────────────────────────────────────────────────────────
     const documentId = generateId();
     const chaptersRaw = buildChapters(lines, file.name);
-
-    const chapters = chaptersRaw.map((ch) => ({
-      ...ch,
-      document_id: documentId,
-    }));
-
+    const chapters = chaptersRaw.map((ch) => ({ ...ch, document_id: documentId }));
     const totalWords = chapters.reduce((sum, ch) => sum + ch.word_count, 0);
 
     const document = {
@@ -300,7 +357,7 @@ export async function POST(request: NextRequest) {
       extraction: `${totalWords} Wörter, ${chapters.length} Kapitel`,
     };
 
-    console.log(`[UPLOAD v0.9.5] "${file.name}" → ${chapters.length} Kapitel`);
+    console.log(`[UPLOAD v1.0.0] "${file.name}" → ${chapters.length} Kapitel, ${totalWords} Wörter`);
 
     return NextResponse.json({
       success: true,
@@ -308,11 +365,12 @@ export async function POST(request: NextRequest) {
       chapters,
       message: `"${file.name}" hochgeladen — ${chapters.length} Kapitel extrahiert.`,
     });
+
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[UPLOAD ERROR] ${errorMsg}`);
     return NextResponse.json(
-      { success: false, error: 'Upload failed', details: errorMsg },
+      { success: false, error: 'Interner Serverfehler beim Upload. Bitte erneut versuchen.', details: errorMsg },
       { status: 500 }
     );
   }

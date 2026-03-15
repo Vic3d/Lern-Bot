@@ -4,7 +4,10 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import AudioPlayer from '@/app/components/AudioPlayer';
 import Transcript from '@/app/components/Transcript';
 import PDFViewer from '@/app/components/PDFViewer';
+import AuthButton from '@/app/components/AuthButton';
 import { loadPDF } from '@/lib/pdfStorage';
+import { logEvent } from '@/lib/events';
+import { getCurrentUserId } from '@/lib/auth';
 import Link from 'next/link';
 
 const CHAPTERS_KEY = (id: string) => `lernbot_chapters_${id}`;
@@ -30,10 +33,18 @@ function loadProgress(docId: string): { chapterIndex: number; charOffset?: numbe
 function cleanTitle(title: string): string {
   const sep = title.lastIndexOf(' — ');
   if (sep > 0) return title.substring(sep + 3).trim();
-  // Also handle " - " separator
   const sep2 = title.lastIndexOf(' - ');
   if (sep2 > 0 && sep2 > title.length / 2) return title.substring(sep2 + 3).trim();
   return title;
+}
+
+/** Returns true if chapters look like auto-split fallback (no real headings detected) */
+function isFallbackSplit(chapters: any[]): boolean {
+  if (!chapters.length) return false;
+  // Fallback titles are "Teil N" or "filename — Teil N"
+  return chapters.every(ch =>
+    /Teil\s+\d+$/.test(ch.title) || /^Teil\s+\d+$/.test(cleanTitle(ch.title))
+  );
 }
 
 type ViewMode = 'pdf' | 'text';
@@ -49,13 +60,17 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [bionicReading, setBionicReading] = useState(false);
   const [speed, setSpeed] = useState(1.0);
   const [resumePrompt, setResumePrompt] = useState<{ chapterIndex: number; charOffset?: number } | null>(null);
-  // TTS seek-to-char: { char, seq } so same position can be re-triggered
   const [ttsSeekTarget, setTtsSeekTarget] = useState<{ char: number; seq: number } | null>(null);
   const seekSeqRef = useRef(0);
+  const sessionStartRef = useRef<number>(Date.now());
+  const chapterStartRef = useRef<number>(Date.now());
+  const userIdRef = useRef<string>('anon');
 
   const chapter = chapters[currentIndex] || null;
   const progress = chapters.length > 1 ? (currentIndex / (chapters.length - 1)) * 100 : 0;
+  const fallbackSplit = isFallbackSplit(chapters);
 
+  // ─── Init ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     const chs = getChapters(params.id);
     if (!chs.length) { setNotFound(true); setLoading(false); return; }
@@ -72,27 +87,83 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
       setResumePrompt({ chapterIndex: saved.chapterIndex, charOffset: saved.charOffset ?? 0 });
     }
 
-    // PDF aus IndexedDB laden
     loadPDF(params.id).then(bytes => {
       if (bytes) setPdfBytes(new Uint8Array(bytes));
-      else setViewMode('text'); // kein PDF → Text-Ansicht
+      else setViewMode('text');
     }).catch(() => setViewMode('text'));
 
     setLoading(false);
+
+    // ─── Event Tracking ─────────────────────────────────────────────────────
+    userIdRef.current = getCurrentUserId();
+    sessionStartRef.current = Date.now();
+    chapterStartRef.current = Date.now();
+
+    const userId = userIdRef.current;
+    const docId = params.id;
+
+    logEvent({
+      user_id: userId,
+      document_id: docId,
+      event_type: 'session_start',
+      data: { url: window.location.pathname },
+    });
+
+    // session_end on page leave
+    const handleUnload = () => {
+      const sessionSeconds = Math.round((Date.now() - sessionStartRef.current) / 1000);
+      logEvent({
+        user_id: userId,
+        document_id: docId,
+        event_type: 'session_end',
+        data: { duration_seconds: sessionSeconds },
+      });
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
   }, [params.id]);
 
-  const goToChapter = useCallback((index: number) => {
+  // ─── Chapter Navigation ─────────────────────────────────────────────────────
+  const goToChapter = useCallback((index: number, markPreviousComplete = false) => {
+    const userId = userIdRef.current;
+    const docId = params.id;
+
+    if (markPreviousComplete && chapters[currentIndex]) {
+      const timeSpent = Math.round((Date.now() - chapterStartRef.current) / 1000);
+      logEvent({
+        user_id: userId,
+        document_id: docId,
+        chapter_id: chapters[currentIndex]?.id,
+        event_type: 'chapter_complete',
+        data: {
+          chapter_num: chapters[currentIndex]?.chapter_num,
+          time_spent_seconds: timeSpent,
+        },
+      });
+    }
+
+    chapterStartRef.current = Date.now();
+
+    if (chapters[index]) {
+      logEvent({
+        user_id: userId,
+        document_id: docId,
+        chapter_id: chapters[index]?.id,
+        event_type: 'chapter_start',
+        data: { chapter_num: chapters[index]?.chapter_num },
+      });
+    }
+
     setCurrentIndex(index);
     setHighlightChar(-1);
     setTtsSeekTarget(null);
     seekSeqRef.current = 0;
-    saveProgress(params.id, index);
-  }, [params.id]);
+    saveProgress(docId, index);
+  }, [params.id, chapters, currentIndex]);
 
   const lastSavedCharRef = useRef(0);
   const handleBoundary = useCallback((charIndex: number) => {
     setHighlightChar(charIndex);
-    // Auto-save position every ~50 chars (throttle)
     if (Math.abs(charIndex - lastSavedCharRef.current) > 50) {
       lastSavedCharRef.current = charIndex;
       saveProgress(params.id, currentIndex, charIndex);
@@ -110,12 +181,12 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     localStorage.setItem('lernbot_bionic', String(next));
   };
 
-  // Called when user clicks a word in the PDF viewer
   const handleSeekToChar = useCallback((charIdx: number) => {
     seekSeqRef.current += 1;
     setTtsSeekTarget({ char: charIdx, seq: seekSeqRef.current });
   }, []);
 
+  // ─── Loading / Not Found ────────────────────────────────────────────────────
   if (loading) return (
     <main style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <p style={{ color: 'var(--text-muted)' }}>Wird geladen...</p>
@@ -175,6 +246,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
             <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)', whiteSpace: 'nowrap' }}>
               {currentIndex + 1} / {chapters.length}
             </span>
+            <AuthButton />
           </div>
         </div>
 
@@ -184,11 +256,11 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
         </div>
       </header>
 
-      {/* Body */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', height: '100vh', paddingTop: '63px' }}>
+      {/* Body — responsive grid via CSS class */}
+      <div className="reader-body">
 
         {/* Left: PDF or Text */}
-        <div style={{ overflow: 'hidden', height: '100%' }}>
+        <div className="reader-main" style={{ overflow: 'hidden', height: '100%' }}>
           {viewMode === 'pdf' && pdfBytes ? (
             <PDFViewer
               pdfBytes={pdfBytes}
@@ -231,7 +303,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
         </div>
 
         {/* Right: Player + Chapter Nav */}
-        <div style={{ background: 'var(--off-white)', borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
+        <div className="reader-sidebar" style={{ background: 'var(--off-white)', borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto' }}>
           <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
             {/* Resume Prompt (PDF mode) */}
@@ -245,7 +317,6 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                     goToChapter(resumePrompt.chapterIndex);
                     const offset = resumePrompt.charOffset ?? 0;
                     if (offset > 0) {
-                      // Scroll PDF to position + seek TTS
                       requestAnimationFrame(() => {
                         setHighlightChar(offset);
                         seekSeqRef.current += 1;
@@ -264,10 +335,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
               chapter={chapter}
               documentId={params.id}
               onBoundary={handleBoundary}
-              onEnded={() => {
-                // Audio ended — user kann manuell zum nächsten Kapitel navigieren
-                // Auto-Advance deaktiviert, da es störend ist
-              }}
+              onEnded={() => {}}
               speed={speed}
               onSpeedChange={handleSpeedChange}
               seekToChar={ttsSeekTarget}
@@ -283,6 +351,23 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                 </span>
               </div>
 
+              {/* Fallback-Split Info */}
+              {fallbackSplit && (
+                <div style={{
+                  padding: '8px 12px',
+                  background: '#fffbeb',
+                  borderBottom: '1px solid #fde68a',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '6px',
+                }}>
+                  <span style={{ fontSize: '13px', flexShrink: 0 }}>ℹ️</span>
+                  <p style={{ fontSize: '11px', color: '#92400e', margin: 0, lineHeight: 1.4 }}>
+                    Automatisch in Teile aufgeteilt — keine Kapitelstruktur erkannt.
+                  </p>
+                </div>
+              )}
+
               {/* Chapter list */}
               <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
                 {chapters.map((ch, i) => {
@@ -293,7 +378,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                   return (
                     <button
                       key={ch.id}
-                      onClick={() => goToChapter(i)}
+                      onClick={() => goToChapter(i, i > currentIndex)}
                       style={{
                         width: '100%', textAlign: 'left',
                         padding: '9px 12px',
@@ -363,7 +448,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                   }}
                 >← Zurück</button>
                 <button
-                  onClick={() => currentIndex < chapters.length - 1 && goToChapter(currentIndex + 1)}
+                  onClick={() => currentIndex < chapters.length - 1 && goToChapter(currentIndex + 1, true)}
                   disabled={currentIndex === chapters.length - 1}
                   style={{
                     flex: 1, padding: '10px',
