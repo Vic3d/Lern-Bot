@@ -9,6 +9,10 @@ import { loadPDF } from '@/lib/pdfStorage';
 import { logEvent } from '@/lib/events';
 import { getCurrentUserId } from '@/lib/auth';
 import Link from 'next/link';
+// LEARN-FEATURES: KI-Komponenten
+import ChapterSummary from '@/app/components/ChapterSummary';
+import Quiz from '@/app/components/Quiz';
+import ExplainButton from '@/app/components/ExplainButton';
 
 const CHAPTERS_KEY = (id: string) => `lernbot_chapters_${id}`;
 const PROGRESS_KEY = (id: string) => `lernbot_progress_${id}`;
@@ -293,11 +297,28 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                   </div>
                 </div>
               )}
+              {/* LEARN-FEATURES: Zusammenfassung über dem Text */}
+              {chapter && (
+                <ChapterSummary
+                  chapterId={chapter.id || String(currentIndex)}
+                  chapterText={chapter.cleaned_text || ''}
+                  chapterTitle={cleanTitle(chapter.title || '')}
+                />
+              )}
               <Transcript
                 text={chapter.cleaned_text || ''}
                 highlightCharIndex={highlightChar}
                 bionicReading={bionicReading}
               />
+              {/* LEARN-FEATURES: Erklär-Button am Ende des Texts */}
+              {chapter?.cleaned_text && (
+                <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
+                  <ExplainButton
+                    text={chapter.cleaned_text}
+                    chapterContext={cleanTitle(chapter.title || '')}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -432,6 +453,17 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                   );
                 })}
               </div>
+
+              {/* LEARN-FEATURES: Quiz starten */}
+              {chapter && (
+                <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border)' }}>
+                  <Quiz
+                    chapterId={chapter.id || String(currentIndex)}
+                    chapterText={chapter.cleaned_text || ''}
+                    chapterTitle={cleanTitle(chapter.title || '')}
+                  />
+                </div>
+              )}
 
               {/* Prev / Next */}
               <div style={{ display: 'flex', borderTop: '1px solid var(--border)' }}>
