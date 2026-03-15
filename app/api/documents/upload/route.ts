@@ -5,21 +5,49 @@ function generateId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
+/** Erkennt laufende Kopf-/Fußzeilen: Zeilen die ≥5x identisch vorkommen und ≤8 Wörter lang sind */
+function detectRunningHeaders(lines: string[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const l of lines) {
+    const t = l.trim();
+    if (t.length >= 2 && t.split(/\s+/).length <= 8) {
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+  }
+  const headers = new Set<string>();
+  for (const [line, count] of counts) {
+    if (count >= 5) headers.add(line);
+  }
+  return headers;
+}
+
 function cleanText(text: string): string {
-  return text
-    .split('\n')
-    .map(l => l.trim())
+  const rawLines = text.split('\n').map(l => l.trim());
+  const runningHeaders = detectRunningHeaders(rawLines);
+
+  return rawLines
     .filter(l => {
       if (!l || l.length < 2) return false;
-      if (/^-?\s*\d+\s*-?$/.test(l)) return false;
-      if (/^Seite\s+\d+/i.test(l)) return false;
+      // Seitenzahlen
+      if (/^-?\s*\d{1,3}\s*-?$/.test(l)) return false;
+      if (/^(Seite|Page)\s+\d+/i.test(l)) return false;
+      // Modul-Codes (z.B. TME102, BWL101)
+      if (/^[A-Z]{2,6}\d{2,4}$/.test(l)) return false;
+      // Autorenzeilen in Fußzeile
+      if (/^Prof\.\s+Dr\./i.test(l)) return false;
+      if (/^Dr\.\s+[A-ZÄÖÜ]/.test(l) && l.length < 60) return false;
+      // Copyright-Zeilen
+      if (/^[©®]|^Copyright/i.test(l)) return false;
+      // Laufende Kopf-/Fußzeilen (wiederkehrend)
+      if (runningHeaders.has(l)) return false;
       return true;
     })
     .join('\n');
 }
 
 function splitIntoChapters(text: string, filename: string) {
-  const headingPattern = /^(\d+[\.\d]*\s+[A-ZÄÖÜ][^\n]{3,80}|Einleitung.*|Zusammenfassung.*)$/;
+  // Überschrift: beginnt mit Zahl + Großbuchstabe, endet NICHT auf Seitenzahl (kein TOC-Eintrag)
+  const headingPattern = /^(\d+[\.\d]*\s+[A-ZÄÖÜ][^\n]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele)$/;
   const lines = text.split('\n');
   const chapters: any[] = [];
   let currentTitle = 'Einleitung';
@@ -27,7 +55,10 @@ function splitIntoChapters(text: string, filename: string) {
   let chapterNum = 0;
 
   for (const line of lines) {
-    if (headingPattern.test(line) && currentLines.join('').length > 300) {
+    const trimmed = line.trim();
+    // TOC-Einträge ausschließen: Überschrift-Pattern aber endet auf Leerzeichen + Zahl (Seitenangabe)
+    const isTocEntry = /\s\d{1,3}$/.test(trimmed) && /^\d/.test(trimmed);
+    if (headingPattern.test(trimmed) && !isTocEntry && currentLines.join('').length > 300) {
       if (currentLines.length > 0) {
         chapterNum++;
         const body = currentLines.join('\n').trim();
@@ -44,10 +75,10 @@ function splitIntoChapters(text: string, filename: string) {
           created_at: new Date().toISOString()
         });
       }
-      currentTitle = line.trim();
+      currentTitle = trimmed;
       currentLines = [];
     } else {
-      currentLines.push(line);
+      currentLines.push(trimmed);
     }
   }
 
