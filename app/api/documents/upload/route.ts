@@ -1,110 +1,137 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { extractText } from 'unpdf';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import path from 'path';
+
+// PDF.js Worker: Pfad über process.cwd() (funktioniert in Next.js API-Routes / Vercel)
+const workerPath = path.join(
+  process.cwd(),
+  'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'
+);
+GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
 
 function generateId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
-/**
- * Dekodiert 4x/2x-wiederholte Zeichenfolgen (AKAD-PDF-Encoding).
- * "Statik ebener TragwerkeStatik ebener Tragwerke..." → "Statik ebener Tragwerke"
- * "1111" → "1"
- */
-function decodeRepeated(line: string): string {
-  // Schritt 1: 4x wiederholte Einzelzeichen → 1x (behandelt "1111"→"1", "SSSStttt"→"St")
-  // WICHTIG: (.)\1{2,} = selbes Zeichen mind. 3x in Folge ("1111"\u2192"1")
-  let current = line.trim().replace(/(.)\1{2,}/g, '$1');
-  // Schritt 2: Wort-Level-Repetition → erste Instanz ("TitelTitelTitel"→"Titel")
-  for (let iter = 0; iter < 4; iter++) {
-    const n = current.length;
-    let found = false;
-    for (let unitLen = 2; unitLen <= Math.floor(n / 2); unitLen++) {
-      const unit = current.substring(0, unitLen);
-      if (current.startsWith(unit + unit)) {
-        current = unit.trim();
-        found = true;
-        break;
-      }
-    }
-    if (!found) break;
-  }
-  return current;
-}
-
-/** Prüft ob eine Zeile ein wiederholtes Encoding hat (mind. 2× selber Prefix) */
-function isRepeatedLine(line: string): boolean {
-  // 4x Einzelzeichen-Repetition (z.B. "1111", "SSSStttt") — immer erkennen
-  if (/(.)\1{3}/.test(line)) return true;
-  // Phrase-Repetition (z.B. "TitelTitelTitel") — min. 4 Zeichen um false positives zu vermeiden
-  // (verhindert z.B. "ge" in "gegensetzt" als false positive)
-  const n = line.length;
-  if (n < 8) return false;
-  for (let unitLen = 4; unitLen <= Math.floor(n / 2); unitLen++) {
-    const unit = line.substring(0, unitLen);
-    if (line.startsWith(unit + unit)) return true;
-  }
-  return false;
+interface RawItem {
+  text: string;
+  x: number;
+  y: number;
+  h: number;
+  repeated: boolean; // true = 4x AKAD-Encoding (Überschrift/Nummer)
 }
 
 /**
- * Bereinigt Text per-page: entfernt bekannte AKAD-Header-Zeilen (Seitenzahl, "Kapitel N", "å TME102")
- * aus den ersten 3 Zeilen jeder Seite. Globale Filter für Copyright etc.
- * KEIN globales Zählen — verhindert falsche Filterung von Mechanik-Variablen (F1, S1, CH, CV).
+ * Extrahiert Text aus einem PDF mit PDF.js.
+ * Nutzt Positionsdaten (x/y) um Header, Footer und Seitenzahlen zu filtern.
+ * Dedupliziert 4x-kodierte AKAD-Texte (gleicher Text × 4 an gleicher Position).
  */
-function cleanTextPerPage(pages: string[]): string {
-  return pages.map(pageText => {
-    const lines = pageText.split('\n').map(l => l.trim()).filter(Boolean);
-    const result: string[] = [];
-    let headerZone = true;
-    let headerCount = 0;
+async function extractWithPDFjs(
+  uint8: Uint8Array
+): Promise<{ pages: string[][]; totalPages: number }> {
+  const pdf = await getDocument({
+    data: uint8,
+    useSystemFonts: true,
+    disableFontFace: true,
+  }).promise;
 
-    // Seiten ohne echten Lehrinhalt komplett überspringen:
-    // Inhaltsverzeichnis-, Impressum- und Cover-Seiten
-    const nonPageLines = lines.filter(l => !/^-?\s*\d{1,3}\s*-?$/.test(l));
-    const firstContent = nonPageLines[0] || '';
-    // Cover-Seite (beginnt mit "Statik"), Inhaltsverzeichnis, Impressum → überspringen
-    if (/^(Inhaltsverzeichnis|Impressum|Studienmaterial|Statik)$/i.test(firstContent)) return '';
+  const totalPages = pdf.numPages;
+  const allPages: string[][] = [];
 
-    for (const line of lines) {
-      // In der Header-Zone (max. 4 Zeilen) bekannte AKAD-Muster entfernen
-      if (headerZone && headerCount < 4) {
-        // BUG-FIX: nur 1-3 Ziffern als Seitenzahl — "1111" (4x kodierte "1") darf NICHT gefiltert werden!
-        if (/^-?\s*\d{1,3}\s*-?$/.test(line)) { headerCount++; continue; }   // Seitenzahl ≤ 999
-        if (/^Kapitel\s+\d+$/i.test(line)) { headerCount++; continue; }       // "Kapitel 1"
-        if (/^[A-Z]{2,6}\d{2,4}$/.test(line)) { headerCount++; continue; }   // "TME102"
-        // Erste echte Inhaltszeile → Header-Zone verlassen
-        headerZone = false;
-      }
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const vp = page.getViewport({ scale: 1 });
+    const pageH = vp.height; // A4 = 841.89 pt
+    const pageW = vp.width;  // A4 = 595.28 pt
+    const tc = await page.getTextContent();
 
-      // Globale Filter (gelten überall, auch außerhalb Header-Zone)
-      if (/^å/.test(line)) continue;                                           // "å TME102" überall
-      // Laufende Abschnittsheader (erscheinen auf jeder Seite des Abschnitts)
-      if (/^(Einleitung\/Lernziele|Kapitel\s+\d+|Zusammenfassung|Literaturverzeichnis|Stichwortverzeichnis|Antworten zu)$/i.test(line)) continue;
-      if (/^Prof\.\s+Dr\./i.test(line)) continue;
-      if (/^Dr\.\s+[A-ZÄÖÜ]/.test(line) && line.length < 60) continue;
-      if (/^[©®]|^Copyright/i.test(line)) continue;
-      if (/^Art\.-Nr\./.test(line)) continue;
-      if (/^K\d{4}$/.test(line)) continue;
-      // TOC-Einträge: "1.1 Titel 5" oder "Zusammenfassung 50" — enden auf Seitenzahl
-      if (/\s\d{1,3}$/.test(line) && /^(\d+(?:\.\d+)*\s+|[A-ZÄÖÜ][a-z].*\s)/.test(line)) continue;
+    // Schritt 1: Sammle Items mit Positionen
+    // Gruppiere nach gerundeter Position (3px-Raster) um 4x-Duplikate zu erkennen
+    const groups = new Map<
+      string,
+      { texts: string[]; x: number; y: number; h: number }
+    >();
 
-      result.push(line);
+    for (const raw of tc.items) {
+      if (!('str' in raw)) continue;
+      const text = raw.str.trim();
+      if (!text) continue;
+
+      const x = raw.transform[4];
+      const y = raw.transform[5];
+      const h = raw.height;
+
+      // Footer filtern (untere 8% der Seite = "Kapitel N", "å TME102" etc.)
+      if (y < pageH * 0.08) continue;
+      // Seitenzahl filtern (obere 5%, rechte 45%)
+      if (y > pageH * 0.94 && x > pageW * 0.55) continue;
+
+      const key = `${Math.round(x / 3) * 3}_${Math.round(y / 3) * 3}`;
+      if (!groups.has(key)) groups.set(key, { texts: [], x, y, h });
+      groups.get(key)!.texts.push(text);
     }
-    return result.join('\n');
-  }).join('\n');
+
+    // Schritt 2: Deduplizieren — 4x gleicher Text = AKAD-Encoding
+    const items: RawItem[] = [];
+    for (const g of groups.values()) {
+      const textCounts = new Map<string, number>();
+      for (const t of g.texts) textCounts.set(t, (textCounts.get(t) || 0) + 1);
+      const [topText, topCount] = [...textCounts.entries()].sort(
+        (a, b) => b[1] - a[1]
+      )[0];
+      items.push({
+        text: topText,
+        x: g.x,
+        y: g.y,
+        h: g.h,
+        repeated: topCount >= 4,
+      });
+    }
+
+    // Schritt 3: Sortieren — von oben nach unten (y desc), links nach rechts (x asc)
+    items.sort((a, b) => b.y - a.y || a.x - b.x);
+
+    // Schritt 4: Bekannte Nicht-Inhalt-Zeilen global filtern
+    const lines: string[] = [];
+    for (const item of items) {
+      const t = item.text;
+      if (/^Prof\.\s+Dr\./i.test(t)) continue;
+      if (/^[©®]|^Copyright/i.test(t)) continue;
+      if (/^Art\.-Nr\./i.test(t)) continue;
+      if (/^K\d{4}$/.test(t)) continue;
+      // Markiere 4x-kodierte Items mit einem Tag für splitIntoChapters
+      lines.push(item.repeated ? `\x01${t}` : t);
+    }
+
+    allPages.push(lines);
+  }
+
+  return { pages: allPages, totalPages };
 }
 
-function splitIntoChapters(text: string, filename: string) {
-  const lines = text.split('\n');
+/**
+ * Findet den ersten echten Inhaltsbereich: überspringt Cover, Inhaltsverzeichnis
+ * und Copyright-Seiten (haben keine 4x-kodierten Items).
+ */
+function findContentStart(pages: string[][]): number {
+  for (let i = 0; i < pages.length; i++) {
+    if (pages[i].some(l => l.startsWith('\x01'))) return i;
+  }
+  return 0; // Fallback: ab Seite 0
+}
+
+function splitIntoChapters(pages: string[][], filename: string) {
   const chapters: any[] = [];
   let currentTitle = 'Einleitung';
   let currentLines: string[] = [];
   let chapterNum = 0;
-  let pendingNumber: string | null = null;  // Wartende Kapitelnummer (z.B. "1")
+  let pendingNumber: string | null = null;
 
-  // Heading-Pattern (nach Dekodierung)
-  const chapterHeadingRe = /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Stichwortverzeichnis|Antworten zu den Kontrollfragen)$/;
-  // TOC-Einträge: enden auf Seitenzahl
+  // Überschrift-Pattern (nach Dekodierung)
+  const chapterHeadingRe =
+    /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\\/\-]{2,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Antworten zu den Kontrollfragen)$/;
+
+  // TOC-Einträge: "1.1 Titel 5" (endet auf Seitenzahl)
   const isTocEntry = (s: string) => /\s\d{1,3}$/.test(s) && /^\d/.test(s);
 
   const flush = () => {
@@ -121,83 +148,82 @@ function splitIntoChapters(text: string, filename: string) {
       duration_seconds: Math.round(wordCount / 2.5),
       audio_path: null,
       audio_status: 'pending',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
     });
   };
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+  const startPage = findContentStart(pages);
 
-    // Dekodiere wiederholte Zeilen (AKAD 4x-Encoding)
-    const decoded = isRepeatedLine(trimmed) ? decodeRepeated(trimmed) : trimmed;
+  for (const page of pages.slice(startPage)) {
+    for (const rawLine of page) {
+      const isRepeated = rawLine.startsWith('\x01');
+      const trimmed = isRepeated ? rawLine.slice(1) : rawLine;
+      if (!trimmed) continue;
 
-    // Kapitelnummer (z.B. "1" aus "1111", oder "1.2" aus "1.21.21.21.2")
-    if (/^\d+(?:\.\d+)*$/.test(decoded) && isRepeatedLine(trimmed)) {
-      pendingNumber = decoded;
-      continue;
-    }
+      // 4x-kodierte reine Zahl = Kapitelnummer (z.B. "1", "1.2", "2.3.1")
+      if (isRepeated && /^\d+(?:\.\d+)*$/.test(trimmed)) {
+        pendingNumber = trimmed;
+        continue;
+      }
 
-    // Überschrift-Erkennung
-    let isHeading = false;
-    let headingTitle = decoded;
+      // Überschrift-Erkennung
+      let isHeading = false;
+      let headingTitle = trimmed;
 
-    if (pendingNumber !== null) {
-      // Kombiniere Nummer + Titel
-      const combined = `${pendingNumber} ${decoded}`;
-      if (chapterHeadingRe.test(combined) && !isTocEntry(combined)) {
-        headingTitle = combined;
+      if (pendingNumber !== null) {
+        const combined = `${pendingNumber} ${trimmed}`;
+        if (chapterHeadingRe.test(combined) && !isTocEntry(combined)) {
+          headingTitle = combined;
+          isHeading = true;
+        }
+        pendingNumber = null;
+      }
+
+      // Direkte Überschrift (z.B. "Einleitung und Lernziele" als 4x-kodiert)
+      if (!isHeading && isRepeated && chapterHeadingRe.test(trimmed) && !isTocEntry(trimmed)) {
         isHeading = true;
+        headingTitle = trimmed;
       }
-      pendingNumber = null;
-    }
 
-    if (!isHeading && chapterHeadingRe.test(decoded) && !isTocEntry(decoded)) {
-      isHeading = true;
-      headingTitle = decoded;
-    }
-
-    if (isHeading) {
-      // Immer flushen wenn Inhalt vorhanden — nie als Body-Text hinzufügen
-      if (currentLines.length > 0 || chapters.length > 0) {
-        flush();
-      }
-      currentTitle = headingTitle;
-      currentLines = [];
-    } else {
-      // Body-Text: nur dekodierte Version einfügen wenn sinnvoll
-      const bodyText = isRepeatedLine(trimmed) ? decoded : trimmed;
-      // Sehr kurze dekodierte Reste (z.B. "ge" aus false positive) überspringen
-      if (bodyText.length > 3) {
-        currentLines.push(bodyText);
+      if (isHeading) {
+        if (currentLines.length > 0 || chapters.length > 0) flush();
+        currentTitle = headingTitle;
+        currentLines = [];
+      } else {
+        // Sehr kurze Zeilen (Formel-Variablen, Einzelbuchstaben) überspringen
+        if (trimmed.length > 3) {
+          currentLines.push(trimmed);
+        }
       }
     }
   }
 
   flush();
 
-  // Fallback: zu wenig Kapitel → nach Wortanzahl splitten
+  // Fallback: kein Kapitel erkannt → nach Wortanzahl splitten
   if (chapters.length <= 1) {
-    const words = text.split(/\s+/).filter(Boolean);
+    const allText = pages
+      .slice(startPage)
+      .flatMap(p => p.map(l => (l.startsWith('\x01') ? l.slice(1) : l)))
+      .filter(l => l.length > 3)
+      .join(' ');
+    const words = allText.split(/\s+/).filter(Boolean);
     const chunkSize = 1500;
-    const result: any[] = [];
-    for (let i = 0; i < words.length; i += chunkSize) {
-      const chunk = words.slice(i, i + chunkSize).join(' ');
-      const num = Math.floor(i / chunkSize) + 1;
-      const wordCount = words.slice(i, i + chunkSize).length;
-      result.push({
+    return Array.from({ length: Math.ceil(words.length / chunkSize) }, (_, i) => {
+      const chunk = words.slice(i * chunkSize, (i + 1) * chunkSize).join(' ');
+      const wc = chunk.split(/\s+/).length;
+      return {
         id: generateId(),
-        chapter_num: num,
-        title: `Teil ${num}`,
+        chapter_num: i + 1,
+        title: `Teil ${i + 1}`,
         cleaned_text: chunk,
-        word_count: wordCount,
-        duration_seconds: Math.round(wordCount / 2.5),
+        word_count: wc,
+        duration_seconds: Math.round(wc / 2.5),
         audio_path: null,
         audio_status: 'pending',
-        created_at: new Date().toISOString()
-      });
-    }
-    return result;
+        created_at: new Date().toISOString(),
+      };
+    });
   }
 
   return chapters;
@@ -209,30 +235,28 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File;
 
     if (!file) {
-      return NextResponse.json({ error: 'No file provided', success: false }, { status: 400 });
+      return NextResponse.json(
+        { error: 'No file provided', success: false },
+        { status: 400 }
+      );
     }
-
     if (!file.name.endsWith('.pdf')) {
-      return NextResponse.json({ error: 'Only PDF files are supported', success: false }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Only PDF files are supported', success: false },
+        { status: 400 }
+      );
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-    // PDF-Extraktion via unpdf (Vercel + Node.js kompatibel, kein Worker nötig)
-    // mergePages: false → Array pro Seite → per-page Header-Stripping möglich
-    const { text: textRaw, totalPages } = await extractText(uint8, { mergePages: false });
-    const pages: string[] = Array.isArray(textRaw) ? (textRaw as string[]) : [(textRaw as string)];
+    const { pages, totalPages } = await extractWithPDFjs(uint8);
 
-    const cleanedText = cleanTextPerPage(pages);
     const documentId = generateId();
-    const chaptersRaw = splitIntoChapters(cleanedText, file.name);
+    const chaptersRaw = splitIntoChapters(pages, file.name);
+    const chapters = chaptersRaw.map(ch => ({ ...ch, document_id: documentId }));
 
-    const chapters = chaptersRaw.map(ch => ({
-      ...ch,
-      document_id: documentId
-    }));
-
+    const totalWords = chapters.reduce((s, c) => s + c.word_count, 0);
     const document = {
       id: documentId,
       filename: file.name,
@@ -241,18 +265,19 @@ export async function POST(request: NextRequest) {
       last_accessed: new Date().toISOString(),
       created_at: new Date().toISOString(),
       status: 'ready',
-      extraction: `${totalPages} Seiten, ${cleanedText.length} Zeichen, ${chapters.length} Kapitel`
+      extraction: `${totalPages} Seiten, ${totalWords} Wörter, ${chapters.length} Kapitel (PDF.js)`,
     };
 
-    console.log(`[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${totalPages} Seiten`);
+    console.log(
+      `[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${totalPages} Seiten, ${totalWords} Wörter`
+    );
 
     return NextResponse.json({
       success: true,
       document,
       chapters,
-      message: `"${file.name}" hochgeladen — ${chapters.length} Kapitel extrahiert.`
+      message: `"${file.name}" hochgeladen — ${chapters.length} Kapitel extrahiert.`,
     });
-
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[UPLOAD ERROR] ${errorMsg}`);
