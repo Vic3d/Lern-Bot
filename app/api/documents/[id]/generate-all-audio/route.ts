@@ -38,16 +38,15 @@ export async function POST(
         }
       }
 
-      const audioFileName = `chapter-${chapter.id}.mp3`;
-      const audioAbsPath = path.join(audioDir, audioFileName);
-      const audioPublicPath = `/audio/${audioFileName}`;
+      const chapterId = `chapter-${chapter.id}`;
 
       try {
-        console.log(`[TTS] Generating: "${chapter.title}" (${chapter.word_count} words)`);
+        console.log(`[TTS] "${chapter.title}" (${chapter.word_count || '?'} words)`);
+
         const input = JSON.stringify({
+          chapter_id: chapterId,
           text: chapter.cleaned_text,
-          output_path: audioAbsPath,
-          lang: 'de'
+          output_dir: audioDir
         });
 
         const output = execFileSync('python3', [scriptPath], {
@@ -57,14 +56,15 @@ export async function POST(
         });
 
         const result = JSON.parse(output.toString());
+
         if (result.success) {
-          // Update in allChapters
           const idx = allChapters.findIndex((c: any) => c.id === chapter.id);
           if (idx !== -1) {
-            allChapters[idx].audio_path = audioPublicPath;
+            allChapters[idx].audio_path = result.audio_path;
             allChapters[idx].audio_status = 'ready';
+            allChapters[idx].duration_seconds = result.duration_seconds;
           }
-          results.push({ id: chapter.id, title: chapter.title, status: 'generated', size: result.size });
+          results.push({ id: chapter.id, title: chapter.title, status: 'generated', size: result.file_size });
         } else {
           results.push({ id: chapter.id, title: chapter.title, status: 'failed', error: result.error });
         }
@@ -73,7 +73,7 @@ export async function POST(
       }
     }
 
-    // Speichern
+    // Alles speichern
     fs.writeFileSync(chaptersFile, JSON.stringify(allChapters, null, 2));
 
     const generated = results.filter(r => r.status === 'generated').length;
