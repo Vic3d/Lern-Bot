@@ -66,6 +66,7 @@ export default function PDFViewer({
 
   // Highlight tracking
   const highlightedSpanRef = useRef<HTMLSpanElement | null>(null);
+  const lastHlIdxRef = useRef(0); // sticky highlight index within chapter items
 
   // Observers
   const lazyObserverRef = useRef<IntersectionObserver | null>(null);
@@ -120,7 +121,7 @@ export default function PDFViewer({
     lastHlIdxRef.current = 0;
   }, [chapterText]);
 
-  // ── Highlight logic — ratio-based (avoids cleaned_text vs PDF-text coord mismatch) ──
+  // ── Highlight logic — bounded chapter items + word-match sticky search ──
   useEffect(() => {
     clearHighlight();
     if (highlightCharIndex < 0 || !chapterText || !chapterText.length) return;
@@ -128,24 +129,43 @@ export default function PDFViewer({
     const allItems = textItemsRef.current;
     if (!allItems.length) return;
 
-    // Only use items that belong to this chapter (at/after chapter start in PDF)
     const chStart = getChapterStart();
-    // Limit to chapter items only: chStart → chStart + ~chapterText.length
-    // (with 1.5x buffer for spacing/formatting differences between cleaned_text and PDF text)
-    const estimatedChapterEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
+
+    // WICHTIG: nur Items dieses Kapitels — chStart bis chStart + ~chapterLength
+    // Verhindert Sprünge auf andere Kapitel/Seiten
+    const chEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
     const chItems = allItems.filter(it =>
-      it.globalStart >= (chStart >= 0 ? chStart : 0) &&
-      it.globalStart < estimatedChapterEnd
+      it.globalStart >= Math.max(0, chStart) && it.globalStart < chEnd
     );
-    // Fallback if too few results
-    const useItems = chItems.length >= 3 ? chItems : allItems;
+    const useItems = chItems.length >= 5 ? chItems : allItems;
     if (!useItems.length) return;
 
-    // Convert char position in cleaned_text → ratio → item index
+    // Ratio-basierter Näherungswert
     const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
-    const targetIdx = Math.min(Math.floor(ratio * useItems.length), useItems.length - 1);
-    const item = useItems[targetIdx];
+    const approxIdx = Math.min(Math.floor(ratio * useItems.length), useItems.length - 1);
 
+    // Erstes Wort an der aktuellen TTS-Position (aus cleaned_text)
+    const snippet = chapterText.substring(highlightCharIndex, highlightCharIndex + 25).trim();
+    const wordAt = snippet.split(/[\s,.:;!?()[\]]/)[0].toLowerCase().replace(/[^a-zäöüß]/gi, '');
+
+    // Sticky-Search: Fenster um lastIdx + approxIdx — bevorzugt Vorwärtsbewegung
+    const lastIdx = lastHlIdxRef.current;
+    const winStart = Math.max(0, Math.min(lastIdx, approxIdx) - 2);
+    const winEnd = Math.min(useItems.length - 1, Math.max(lastIdx + 1, approxIdx) + 12);
+
+    let bestIdx = approxIdx;
+    if (wordAt.length >= 3) {
+      for (let j = winStart; j <= winEnd; j++) {
+        const s = (useItems[j].str || '').toLowerCase().replace(/[^a-zäöüß]/gi, '');
+        if (s.includes(wordAt) || (s.length > 2 && wordAt.includes(s))) {
+          bestIdx = j;
+          break;
+        }
+      }
+    }
+    lastHlIdxRef.current = bestIdx;
+
+    const item = useItems[bestIdx];
     if (item?.spanEl) {
       item.spanEl.classList.add('pdf-hl');
       highlightedSpanRef.current = item.spanEl;
