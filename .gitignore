@@ -2,3 +2,7 @@ node_modules/
 .next/
 .vercel/
 .env.local
+uploads/
+public/audio/
+data/documents.json
+data/chapters.json
