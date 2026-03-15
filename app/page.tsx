@@ -111,7 +111,7 @@ export default function Home() {
             Smart PDF Reader
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.3.0</span>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>v0.3.1</span>
           </div>
         </div>
       </header>
