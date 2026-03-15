@@ -189,14 +189,18 @@ export default function PDFViewer({
       for (let i = 0; i < tc.items.length; i++) {
         const raw = tc.items[i] as any;
         if (!raw.str) continue;
+        // Add trailing space unless item already ends with space
+        // This makes fullPdfText match cleaned_text spacing
+        const str = raw.str;
+        const trailingSpace = str.endsWith(' ') ? '' : ' ';
         textItems.push({
-          str: raw.str,
+          str,
           globalStart: offset,
-          globalEnd: offset + raw.str.length,
+          globalEnd: offset + str.length,
           pageNum: p,
           itemIndex: i,
         });
-        offset += raw.str.length;
+        offset += str.length + trailingSpace.length;
       }
     }
 
@@ -365,11 +369,30 @@ export default function PDFViewer({
       span.addEventListener('click', () => {
         const cb = onSeekToCharRef.current;
         if (!cb || !capturedItem) return;
-        const chStart = getChapterStart();
-        const charInChapter = capturedItem.globalStart - chStart;
         const ct = chapterTextRef.current || '';
-        const clamped = Math.max(0, Math.min(charInChapter, ct.length - 1));
-        cb(clamped);
+        if (!ct) return;
+        const chStart = getChapterStart();
+        const allItems = textItemsRef.current;
+        const fullLen = fullPdfTextRef.current.length;
+        let charInChapter: number;
+        if (chStart >= 0 && capturedItem.globalStart >= chStart) {
+          // Direct offset (works when chapterText spacing matches PDF text)
+          const raw = capturedItem.globalStart - chStart;
+          if (raw >= 0 && raw < ct.length * 1.5) {
+            charInChapter = Math.min(raw, ct.length - 1);
+          } else {
+            // Fallback: ratio within chapter items
+            const chItems = allItems.filter(it => it.globalStart >= chStart);
+            const idxInChapter = chItems.findIndex(it => it === capturedItem);
+            const ratio = chItems.length > 1 ? idxInChapter / (chItems.length - 1) : 0;
+            charInChapter = Math.floor(ratio * (ct.length - 1));
+          }
+        } else {
+          // No chapter start found — ratio over full PDF
+          const ratio = fullLen > 0 ? capturedItem.globalStart / fullLen : 0;
+          charInChapter = Math.floor(ratio * ct.length);
+        }
+        cb(Math.max(0, Math.min(charInChapter, ct.length - 1)));
       });
 
       span.addEventListener('mouseenter', () => {
