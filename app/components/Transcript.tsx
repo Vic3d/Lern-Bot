@@ -48,13 +48,11 @@ function renderSentenceContent(sentence: string, bionic: boolean): React.ReactNo
 
 export default function Transcript({ text, highlightCharIndex, bionicReading }: TranscriptProps) {
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([]);
-  const [bionicReading, setBionicMode] = useState<boolean>(false);
 
 
 
   const toggleBionic = () => {
     const next = !bionicReading;
-    setBionicMode(next);
     localStorage.setItem('lernbot_bionic', String(next));
   };
 
