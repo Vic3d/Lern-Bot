@@ -54,7 +54,8 @@ export default function PDFViewer({ pdfBytes, currentPage = 1, onPageChange }: P
       setLoading(true);
       setError(null);
       const pdfjsLib = (window as any).pdfjsLib;
-      const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
+      const copy = pdfBytes.slice(0); // kopieren — pdfjs transferiert den Buffer
+      const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) });
       const pdf = await loadingTask.promise;
       pdfDocRef.current = pdf;
       setTotalPages(pdf.numPages);
