@@ -5,18 +5,54 @@ function generateId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
-/** Erkennt laufende Kopf-/Fußzeilen: Zeilen die ≥5x identisch vorkommen und ≤8 Wörter lang sind */
+/**
+ * Dekodiert 4x/2x-wiederholte Zeichenfolgen (AKAD-PDF-Encoding).
+ * "Statik ebener TragwerkeStatik ebener Tragwerke..." → "Statik ebener Tragwerke"
+ * "1111" → "1"
+ */
+function decodeRepeated(line: string): string {
+  // Schritt 1: 4x wiederholte Einzelzeichen → 1x (behandelt "1111"→"1", "SSSStttt"→"St")
+  let current = line.trim().replace(/(.){3,}/g, '$1');
+  // Schritt 2: Wort-Level-Repetition → erste Instanz ("TitelTitelTitel"→"Titel")
+  for (let iter = 0; iter < 4; iter++) {
+    const n = current.length;
+    let found = false;
+    for (let unitLen = 2; unitLen <= Math.floor(n / 2); unitLen++) {
+      const unit = current.substring(0, unitLen);
+      if (current.startsWith(unit + unit)) {
+        current = unit.trim();
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+  }
+  return current;
+}
+
+/** Prüft ob eine Zeile ein wiederholtes Encoding hat (mind. 2× selber Prefix) */
+function isRepeatedLine(line: string): boolean {
+  const n = line.length;
+  if (n < 4) return false;
+  for (let unitLen = 1; unitLen <= Math.floor(n / 2); unitLen++) {
+    const unit = line.substring(0, unitLen);
+    if (line.startsWith(unit + unit)) return true;
+  }
+  return false;
+}
+
+/** Erkennt laufende Kopf-/Fußzeilen: Zeilen die ≥4x identisch vorkommen */
 function detectRunningHeaders(lines: string[]): Set<string> {
   const counts = new Map<string, number>();
   for (const l of lines) {
     const t = l.trim();
-    if (t.length >= 2 && t.split(/\s+/).length <= 8) {
+    if (t.length >= 2 && t.split(/\s+/).length <= 10) {
       counts.set(t, (counts.get(t) || 0) + 1);
     }
   }
   const headers = new Set<string>();
   for (const [line, count] of counts) {
-    if (count >= 5) headers.add(line);
+    if (count >= 4) headers.add(line);
   }
   return headers;
 }
@@ -29,14 +65,20 @@ function cleanText(text: string): string {
     .filter(l => {
       if (!l || l.length < 2) return false;
       // Seitenzahlen
-      if (/^-?\s*\d{1,3}\s*-?$/.test(l)) return false;
+      if (/^-?\s*\d{1,4}\s*-?$/.test(l)) return false;
       if (/^(Seite|Page)\s+\d+/i.test(l)) return false;
-      // Modul-Codes (z.B. TME102, BWL101)
+      // Modul-Codes wie TME102, BWL101
       if (/^[A-Z]{2,6}\d{2,4}$/.test(l)) return false;
-      // Autorenzeilen in Fußzeile
+      // AKAD-Header: "Kapitel N" und "å TME102"-Muster
+      if (/^Kapitel\s+\d+$/i.test(l)) return false;
+      if (/^å\s+[A-Z]/.test(l)) return false;
+      if (/^[åÅ§†‡]$/.test(l)) return false;
+      // Abschnittsname-Header wie "Einleitung/Lernziele" ohne weiteren Text
+      if (/^(Einleitung\/Lernziele|Statik ebener Tragwerke|Ebene Fachwerke)$/.test(l)) return false;
+      // Autorenzeilen
       if (/^Prof\.\s+Dr\./i.test(l)) return false;
       if (/^Dr\.\s+[A-ZÄÖÜ]/.test(l) && l.length < 60) return false;
-      // Copyright-Zeilen
+      // Copyright
       if (/^[©®]|^Copyright/i.test(l)) return false;
       // Laufende Kopf-/Fußzeilen (wiederkehrend)
       if (runningHeaders.has(l)) return false;
@@ -46,46 +88,23 @@ function cleanText(text: string): string {
 }
 
 function splitIntoChapters(text: string, filename: string) {
-  // Überschrift: beginnt mit Zahl + Großbuchstabe, endet NICHT auf Seitenzahl (kein TOC-Eintrag)
-  const headingPattern = /^(\d+[\.\d]*\s+[A-ZÄÖÜ][^\n]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele)$/;
   const lines = text.split('\n');
   const chapters: any[] = [];
   let currentTitle = 'Einleitung';
   let currentLines: string[] = [];
   let chapterNum = 0;
+  let pendingNumber: string | null = null;  // Wartende Kapitelnummer (z.B. "1")
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    // TOC-Einträge ausschließen: Überschrift-Pattern aber endet auf Leerzeichen + Zahl (Seitenangabe)
-    const isTocEntry = /\s\d{1,3}$/.test(trimmed) && /^\d/.test(trimmed);
-    if (headingPattern.test(trimmed) && !isTocEntry && currentLines.join('').length > 300) {
-      if (currentLines.length > 0) {
-        chapterNum++;
-        const body = currentLines.join('\n').trim();
-        const wordCount = body.split(/\s+/).length;
-        chapters.push({
-          id: generateId(),
-          chapter_num: chapterNum,
-          title: currentTitle,
-          cleaned_text: body,
-          word_count: wordCount,
-          duration_seconds: Math.round(wordCount / 2.5),
-          audio_path: null,
-          audio_status: 'pending',
-          created_at: new Date().toISOString()
-        });
-      }
-      currentTitle = trimmed;
-      currentLines = [];
-    } else {
-      currentLines.push(trimmed);
-    }
-  }
+  // Heading-Pattern (nach Dekodierung)
+  const chapterHeadingRe = /^(\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort)$/;
+  // TOC-Einträge: enden auf Seitenzahl
+  const isTocEntry = (s: string) => /\s\d{1,3}$/.test(s) && /^\d/.test(s);
 
-  if (currentLines.length > 0) {
+  const flush = () => {
+    if (currentLines.length === 0) return;
     chapterNum++;
     const body = currentLines.join('\n').trim();
-    const wordCount = body.split(/\s+/).length;
+    const wordCount = body.split(/\s+/).filter(Boolean).length;
     chapters.push({
       id: generateId(),
       chapter_num: chapterNum,
@@ -97,11 +116,61 @@ function splitIntoChapters(text: string, filename: string) {
       audio_status: 'pending',
       created_at: new Date().toISOString()
     });
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Dekodiere wiederholte Zeilen (AKAD 4x-Encoding)
+    const decoded = isRepeatedLine(trimmed) ? decodeRepeated(trimmed) : trimmed;
+
+    // Reine Zahl = wartende Kapitelnummer (z.B. "1" aus "1111")
+    if (/^\d+$/.test(decoded) && isRepeatedLine(trimmed)) {
+      pendingNumber = decoded;
+      continue;
+    }
+
+    // Überschrift-Erkennung
+    let isHeading = false;
+    let headingTitle = decoded;
+
+    if (pendingNumber !== null) {
+      // Kombiniere Nummer + Titel
+      const combined = `${pendingNumber} ${decoded}`;
+      if (chapterHeadingRe.test(combined) && !isTocEntry(combined)) {
+        headingTitle = combined;
+        isHeading = true;
+      }
+      pendingNumber = null;
+    }
+
+    if (!isHeading && chapterHeadingRe.test(decoded) && !isTocEntry(decoded)) {
+      isHeading = true;
+      headingTitle = decoded;
+    }
+
+    if (isHeading && currentLines.join('').length > 200) {
+      flush();
+      currentTitle = headingTitle;
+      currentLines = [];
+    } else if (isHeading && chapters.length === 0 && currentLines.length === 0) {
+      currentTitle = headingTitle;
+    } else {
+      // Body-Text: nur dekodierte Version einfügen wenn sinnvoll
+      const bodyText = isRepeatedLine(trimmed) ? decoded : trimmed;
+      // Wiederholte reine Überschriften-Zeilen im Body überspringen
+      if (!isRepeatedLine(trimmed) || bodyText.length > 3) {
+        currentLines.push(bodyText);
+      }
+    }
   }
+
+  flush();
 
   // Fallback: zu wenig Kapitel → nach Wortanzahl splitten
   if (chapters.length <= 1) {
-    const words = text.split(/\s+/);
+    const words = text.split(/\s+/).filter(Boolean);
     const chunkSize = 1500;
     const result: any[] = [];
     for (let i = 0; i < words.length; i += chunkSize) {
@@ -111,7 +180,7 @@ function splitIntoChapters(text: string, filename: string) {
       result.push({
         id: generateId(),
         chapter_num: num,
-        title: `${filename} — Teil ${num}`,
+        title: `Teil ${num}`,
         cleaned_text: chunk,
         word_count: wordCount,
         duration_seconds: Math.round(wordCount / 2.5),
