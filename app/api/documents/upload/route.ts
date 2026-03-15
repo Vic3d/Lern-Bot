@@ -72,8 +72,22 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
       .map(([y, items]) => {
         // Items innerhalb der Zeile nach x sortieren
         items.sort((a: any, b: any) => a.transform[4] - b.transform[4]);
-        const texts = items.map((i: any) => i.str);
-        const text = texts.join('').trim();
+        // Leerzeichen zwischen Items einfügen wenn nötig (verhindert "Tragwerkebestehen")
+        let text = '';
+        for (let k = 0; k < items.length; k++) {
+          const s = items[k].str;
+          if (k === 0) { text = s; continue; }
+          const prev = text;
+          // Space einfügen wenn letztes Zeichen kein Space und nächstes auch nicht
+          if (prev.length && !prev.endsWith(' ') && s.length && !s.startsWith(' ')) {
+            // Nur wenn x-Abstand > 1pt (echte Lücke, kein Overlap)
+            const xGap = items[k].transform[4] - (items[k - 1].transform[4] + (items[k - 1].width || 0));
+            text += (xGap > 1 ? ' ' : '') + s;
+          } else {
+            text += s;
+          }
+        }
+        text = text.trim();
 
         // AKAD-Encoding-Erkennung: N≥2 identische Items
         let isEncoded = false;
