@@ -27,6 +27,29 @@ interface LineItem {
  * Nutzt PDF.js direkt statt unpdf → Zugriff auf x/y/fontHeight pro Item.
  * AKAD-Encoding (4x wiederholte Items) wird strukturell erkannt, nicht per Regex.
  */
+/**
+ * Bounding-Box-Deduplication: entfernt redundante Text-Items die an (nahezu) gleicher
+ * Position gedruckt wurden (z.B. AKAD 4x-Encoding, Bold-Pseudo-Effekte).
+ * Logik: Item A ist Duplikat von B wenn:
+ *   - gleicher Text (nach trim)  UND
+ *   - Mittelpunkte liegen ≤ 4pt auseinander (Overlap ohne width/height zu brauchen)
+ * Behält immer das ERSTE Vorkommen.
+ */
+function deduplicateItems(items: any[]): any[] {
+  const kept: any[] = [];
+  for (const item of items) {
+    const str = item.str.trim();
+    const x = item.transform[4];
+    const y = item.transform[5];
+    const isDuplicate = kept.some((k) => {
+      if (k.str.trim() !== str) return false;
+      return Math.abs(k.transform[4] - x) <= 4 && Math.abs(k.transform[5] - y) <= 4;
+    });
+    if (!isDuplicate) kept.push(item);
+  }
+  return kept;
+}
+
 async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
   const doc = await getDocument({
     data: buffer,
@@ -49,9 +72,14 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
     const FOOTER_Y = pageHeight * 0.08;
 
     // Schritt 1: Items auf Inhaltsbereich reduzieren
-    const contentItems = (textContent.items as any[]).filter(
+    const rawItems = (textContent.items as any[]).filter(
       (item) => item.str?.trim() && item.transform[5] > FOOTER_Y && item.transform[5] < HEADER_Y
     );
+
+    // Schritt 1b: Bounding-Box-Deduplication (wie PDF.js Text-Layer)
+    // Wenn zwei Items gleichen Text haben UND ihre Bounding Boxes >50% überlappen → Duplikat
+    // Deckt AKAD 4x-Encoding, aber auch andere PDFs die Text mehrfach rendern
+    const contentItems = deduplicateItems(rawItems);
 
     // Schritt 2: Items nach y-Position gruppieren (±3pt = gleiche Zeile)
     const yMap = new Map<number, any[]>();
@@ -111,6 +139,38 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
   return allLines;
 }
 
+/**
+ * Sicherheitsnetz: Bereinigt doppelt vorkommenden Text aus dem extrahierten Inhalt.
+ * Wird NACH der Extraktion auf jedes cleaned_text angewendet.
+ *
+ * Behandelt zwei Fälle:
+ * 1. Inline-Wiederholungen: "TitelTitelTitelTitel" → "Titel"  (AKAD 4x-Encoding)
+ * 2. Zeilen-Wiederholungen: gleiche Zeile N≥2 mal hintereinander → 1x behalten
+ *
+ * Andere Screen-Reader (Speechify, Natural Reader) machen exakt das als Post-Processing.
+ */
+function sanitizeText(text: string): string {
+  if (!text) return text;
+
+  // Schritt 1: Inline-Wiederholungen (z.B. "WortWortWortWort" → "Wort")
+  // Findet Phrasen die 2–6x direkt hintereinander vorkommen
+  let cleaned = text.replace(/(.{4,}?)\1{2,}/g, '$1');
+
+  // Schritt 2: Zeilen-Wiederholungen (gleiche Zeile hintereinander)
+  const lines = cleaned.split('\n');
+  const deduped: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    // Überspringe wenn die letzten 1-3 Zeilen identisch sind (Schwelle: ≥2 gleich = streichen)
+    const recent = deduped.slice(-3).map(l => l.trim());
+    if (!t || !recent.includes(t)) {
+      deduped.push(line);
+    }
+  }
+
+  return deduped.join('\n').trim();
+}
+
 /** Baut Kapitel-Struktur aus den extrahierten Zeilen */
 function buildChapters(lines: LineItem[], filename: string) {
   const chapters: any[] = [];
@@ -126,7 +186,8 @@ function buildChapters(lines: LineItem[], filename: string) {
   const flush = () => {
     if (currentLines.length === 0) return;
     chapterNum++;
-    const body = currentLines.join('\n').trim();
+    // sanitizeText als Sicherheitsnetz: fängt doppelten Text auch wenn PDF.js-Erkennung nicht greift
+    const body = sanitizeText(currentLines.join('\n'));
     const wordCount = body.split(/\s+/).filter(Boolean).length;
     chapters.push({
       id: generateId(),
