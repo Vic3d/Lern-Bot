@@ -27,8 +27,10 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
   const [duration, setDuration] = useState(0);
   const [ttsPaused, setTtsPaused] = useState(false);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const suppressEndRef = useRef(false); // verhindert dass cancel() → onEnded() feuert
   const ttsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ttsProgressRef = useRef(0);
+  const ttsGenRef = useRef(0); // Increment on every stop — prevents stale onend from advancing chapter
   const ttsStartTimeRef = useRef(0);
   const ttsStartCharRef = useRef(0);
   const ttsResumeFromRef = useRef(0); // base position when TTS started
@@ -89,9 +91,12 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
   }, [speed]);
 
   function stopTTS() {
+    suppressEndRef.current = true; // cancel() soll kein onEnded triggern
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
     if (ttsIntervalRef.current) { clearInterval(ttsIntervalRef.current); ttsIntervalRef.current = null; }
     utteranceRef.current = null;
+    // suppressEnd nach kurzer Verzögerung zurücksetzen (onend feuert asynchron)
+    setTimeout(() => { suppressEndRef.current = false; }, 100);
   }
 
   function startTTS(resumeFrom = 0) {
@@ -113,6 +118,11 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
     utteranceRef.current = utterance;
     utterance.onboundary = (event) => { onBoundary?.(startChar + event.charIndex); };
     utterance.onend = () => {
+      if (suppressEndRef.current) {
+        // cancel() wurde aufgerufen (Seek/Stop) — kein Chapter-Advance
+        suppressEndRef.current = false;
+        return;
+      }
       setIsPlaying(false); setTtsPaused(false);
       ttsProgressRef.current = dur; setCurrentTime(dur);
       if (ttsIntervalRef.current) clearInterval(ttsIntervalRef.current);

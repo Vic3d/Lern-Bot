@@ -120,7 +120,8 @@ export default function PDFViewer({
   useEffect(() => {
     charSpanMapRef.current = [];
     rebuildChapterCache(chapterText);
-    scrollToChapterStart();
+    // Auto-scroll deaktiviert — statt dessen: Highlight-Position führt den Nutzer
+    // scrollToChapterStart();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapterText, startPage, endPage]);
 

@@ -265,8 +265,8 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
               documentId={params.id}
               onBoundary={handleBoundary}
               onEnded={() => {
-                if (currentIndex < chapters.length - 1)
-                  setTimeout(() => goToChapter(currentIndex + 1), 800);
+                // Audio ended — user kann manuell zum nächsten Kapitel navigieren
+                // Auto-Advance deaktiviert, da es störend ist
               }}
               speed={speed}
               onSpeedChange={handleSpeedChange}

@@ -33,12 +33,14 @@ def clean_chapter_title(title: str) -> str:
 
 heading_pattern = re.compile(
     r'^('
-    r'\d+\.\d+(?:\.\d+)*\s+[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß /\-]{2,70}'
-    r'|\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-]{3,70}'
+    r'\d+\.\d+(?:\.\d+)*\s+[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß /\-—\(\)]{2,100}'  # 1.1 Titel
+    r'|\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-—\(\)]{3,100}'  # 1 Titel
+    r'|Kapitel\s+\d+[A-Za-zÄÖÜäöüß /\-—]{0,80}'  # Kapitel 1 Xxx
     r'|Einleitung(?:\s*/\s*Lernziele)?'
     r'|Einleitung\s*und\s*Lernziele'
     r'|Zusammenfassung'
     r'|Lernziele'
+    r'|Lösung|Aufgaben'
     r')$'
 )
 
@@ -131,7 +133,7 @@ def split_chapters(page_lines, filename, num_pages):
             num = i // chunk_size + 1
             chapters.append({
                 "chapter_num": num,
-                "title": f"Teil {num}",
+                "title": f"Kapitel {num}",
                 "text": " ".join(chunk_words),
                 "word_count": len(chunk_words),
                 "duration_seconds": round(len(chunk_words) / 2.5),
