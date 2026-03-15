@@ -55,27 +55,37 @@ function cleanTextPerPage(pages: string[]): string {
   return pages.map(pageText => {
     const lines = pageText.split('\n').map(l => l.trim()).filter(Boolean);
     const result: string[] = [];
-    let headerZone = true;  // Die ersten paar Zeilen pro Seite sind Header-Zone
+    let headerZone = true;
     let headerCount = 0;
+
+    // Seiten ohne echten Lehrinhalt komplett überspringen:
+    // Inhaltsverzeichnis-, Impressum- und Cover-Seiten
+    const nonPageLines = lines.filter(l => !/^-?\s*\d{1,3}\s*-?$/.test(l));
+    const firstContent = nonPageLines[0] || '';
+    // Cover-Seite (beginnt mit "Statik"), Inhaltsverzeichnis, Impressum → überspringen
+    if (/^(Inhaltsverzeichnis|Impressum|Studienmaterial|Statik)$/i.test(firstContent)) return '';
 
     for (const line of lines) {
       // In der Header-Zone (max. 4 Zeilen) bekannte AKAD-Muster entfernen
       if (headerZone && headerCount < 4) {
-        if (/^-?\s*\d{1,4}\s*-?$/.test(line)) { headerCount++; continue; }  // Seitenzahl
-        if (/^Kapitel\s+\d+$/i.test(line)) { headerCount++; continue; }      // "Kapitel 1"
-        if (/^å/.test(line)) { headerCount++; continue; }                        // "å TME102"
+        // BUG-FIX: nur 1-3 Ziffern als Seitenzahl — "1111" (4x kodierte "1") darf NICHT gefiltert werden!
+        if (/^-?\s*\d{1,3}\s*-?$/.test(line)) { headerCount++; continue; }   // Seitenzahl ≤ 999
+        if (/^Kapitel\s+\d+$/i.test(line)) { headerCount++; continue; }       // "Kapitel 1"
         if (/^[A-Z]{2,6}\d{2,4}$/.test(line)) { headerCount++; continue; }   // "TME102"
         // Erste echte Inhaltszeile → Header-Zone verlassen
         headerZone = false;
       }
 
-      // Globale Filter (gelten überall, nicht nur in Header-Zone)
-      if (/^(Einleitung\/Lernziele)$/.test(line)) continue;
+      // Globale Filter (gelten überall, auch außerhalb Header-Zone)
+      if (/^å/.test(line)) continue;                                           // "å TME102" überall
+      if (/^(Einleitung\/Lernziele|Kapitel\s+\d+)$/i.test(line)) continue;    // laufende Abschnittsheader
       if (/^Prof\.\s+Dr\./i.test(line)) continue;
       if (/^Dr\.\s+[A-ZÄÖÜ]/.test(line) && line.length < 60) continue;
       if (/^[©®]|^Copyright/i.test(line)) continue;
-      if (/^Art\.-Nr\./.test(line)) continue;  // AKAD Artikelnummer
-      if (/^K\d{4}$/.test(line)) continue;        // "K1113" etc.
+      if (/^Art\.-Nr\./.test(line)) continue;
+      if (/^K\d{4}$/.test(line)) continue;
+      // TOC-Einträge: "1.1 Titel 5" oder "Zusammenfassung 50" — enden auf Seitenzahl
+      if (/\s\d{1,3}$/.test(line) && /^(\d+(?:\.\d+)*\s+|[A-ZÄÖÜ][a-z].*\s)/.test(line)) continue;
 
       result.push(line);
     }
