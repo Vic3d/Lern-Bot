@@ -1,138 +1,111 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import path from 'path';
+import { resolve } from 'path';
 
-// PDF.js Worker: Pfad über process.cwd() (funktioniert in Next.js API-Routes / Vercel)
-const workerPath = path.join(
-  process.cwd(),
-  'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'
-);
-GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
+// PDF.js direkt — gibt uns Position + strukturelle Wiederholungs-Erkennung
+// unpdf wird nicht mehr verwendet (concateniert Items ohne Positionsdaten)
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
+
+// Worker-Pfad für Node.js/Vercel Serverless
+const workerPath = resolve(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs');
+GlobalWorkerOptions.workerSrc = workerPath;
 
 function generateId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
-interface RawItem {
-  text: string;
-  x: number;
+interface LineItem {
   y: number;
-  h: number;
-  repeated: boolean; // true = 4x AKAD-Encoding (Überschrift/Nummer)
+  text: string;       // zusammengefügter Text aller Items in dieser Zeile
+  deduped: string;    // dedupliziert wenn Encoding erkannt
+  isEncoded: boolean; // true = N≥2 gleiche Items = AKAD-Encoding
 }
 
 /**
- * Extrahiert Text aus einem PDF mit PDF.js.
- * Nutzt Positionsdaten (x/y) um Header, Footer und Seitenzahlen zu filtern.
- * Dedupliziert 4x-kodierte AKAD-Texte (gleicher Text × 4 an gleicher Position).
+ * Extrahiert Text aus PDF mit positionsbasierter Header/Footer-Erkennung.
+ * Nutzt PDF.js direkt statt unpdf → Zugriff auf x/y/fontHeight pro Item.
+ * AKAD-Encoding (4x wiederholte Items) wird strukturell erkannt, nicht per Regex.
  */
-async function extractWithPDFjs(
-  uint8: Uint8Array
-): Promise<{ pages: string[][]; totalPages: number }> {
-  const pdf = await getDocument({
-    data: uint8,
-    useSystemFonts: true,
-    disableFontFace: true,
+async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
+  const doc = await getDocument({
+    data: buffer,
+    useWorkerFetch: false,
+    isEvalSupported: false,
   }).promise;
 
-  const totalPages = pdf.numPages;
-  const allPages: string[][] = [];
+  const allLines: LineItem[] = [];
 
-  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const vp = page.getViewport({ scale: 1 });
-    const pageH = vp.height; // A4 = 841.89 pt
-    const pageW = vp.width;  // A4 = 595.28 pt
-    const tc = await page.getTextContent();
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    const page = await doc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1 });
+    const pageHeight = viewport.height; // A4 ≈ 842pt
 
-    // Schritt 1: Sammle Items mit Positionen
-    // Gruppiere nach gerundeter Position (3px-Raster) um 4x-Duplikate zu erkennen
-    const groups = new Map<
-      string,
-      { texts: string[]; x: number; y: number; h: number }
-    >();
+    const textContent = await page.getTextContent();
 
-    for (const raw of tc.items) {
-      if (!('str' in raw)) continue;
-      const text = raw.str.trim();
-      if (!text) continue;
+    // Header-Zone (oben): y > 92% der Seitenhöhe  →  Seitenzahl
+    // Footer-Zone (unten): y < 8% der Seitenhöhe  →  "Kapitel N", "å TME102"
+    const HEADER_Y = pageHeight * 0.92;
+    const FOOTER_Y = pageHeight * 0.08;
 
-      const x = raw.transform[4];
-      const y = raw.transform[5];
-      const h = raw.height;
+    // Schritt 1: Items auf Inhaltsbereich reduzieren
+    const contentItems = (textContent.items as any[]).filter(
+      (item) => item.str?.trim() && item.transform[5] > FOOTER_Y && item.transform[5] < HEADER_Y
+    );
 
-      // Footer filtern (untere 8% der Seite = "Kapitel N", "å TME102" etc.)
-      if (y < pageH * 0.08) continue;
-      // Seitenzahl filtern (obere 5%, rechte 45%)
-      if (y > pageH * 0.94 && x > pageW * 0.55) continue;
-
-      const key = `${Math.round(x / 3) * 3}_${Math.round(y / 3) * 3}`;
-      if (!groups.has(key)) groups.set(key, { texts: [], x, y, h });
-      groups.get(key)!.texts.push(text);
+    // Schritt 2: Items nach y-Position gruppieren (±3pt = gleiche Zeile)
+    const yMap = new Map<number, any[]>();
+    for (const item of contentItems) {
+      const y = Math.round(item.transform[5]);
+      let matched = false;
+      for (const [gy] of yMap) {
+        if (Math.abs(gy - y) <= 3) {
+          yMap.get(gy)!.push(item);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) yMap.set(y, [item]);
     }
 
-    // Schritt 2: Deduplizieren — 4x gleicher Text = AKAD-Encoding
-    const items: RawItem[] = [];
-    for (const g of groups.values()) {
-      const textCounts = new Map<string, number>();
-      for (const t of g.texts) textCounts.set(t, (textCounts.get(t) || 0) + 1);
-      const [topText, topCount] = [...textCounts.entries()].sort(
-        (a, b) => b[1] - a[1]
-      )[0];
-      items.push({
-        text: topText,
-        x: g.x,
-        y: g.y,
-        h: g.h,
-        repeated: topCount >= 4,
+    // Schritt 3: Zeilen sortieren (y absteigend = oben nach unten)
+    const sortedLines = [...yMap.entries()]
+      .sort((a, b) => b[0] - a[0])
+      .map(([y, items]) => {
+        // Items innerhalb der Zeile nach x sortieren
+        items.sort((a: any, b: any) => a.transform[4] - b.transform[4]);
+        const texts = items.map((i: any) => i.str);
+        const text = texts.join('').trim();
+
+        // AKAD-Encoding-Erkennung: N≥2 identische Items
+        let isEncoded = false;
+        let deduped = text;
+        if (items.length >= 2) {
+          const firstStr = items[0].str.trim();
+          if (firstStr && items.every((i: any) => i.str.trim() === firstStr)) {
+            isEncoded = true;
+            deduped = firstStr;
+          }
+        }
+
+        return { y, text, deduped, isEncoded } as LineItem;
       });
-    }
 
-    // Schritt 3: Sortieren — von oben nach unten (y desc), links nach rechts (x asc)
-    items.sort((a, b) => b.y - a.y || a.x - b.x);
-
-    // Schritt 4: Bekannte Nicht-Inhalt-Zeilen global filtern
-    const lines: string[] = [];
-    for (const item of items) {
-      const t = item.text;
-      if (/^Prof\.\s+Dr\./i.test(t)) continue;
-      if (/^[©®]|^Copyright/i.test(t)) continue;
-      if (/^Art\.-Nr\./i.test(t)) continue;
-      if (/^K\d{4}$/.test(t)) continue;
-      // Markiere 4x-kodierte Items mit einem Tag für splitIntoChapters
-      lines.push(item.repeated ? `\x01${t}` : t);
-    }
-
-    allPages.push(lines);
+    allLines.push(...sortedLines);
   }
 
-  return { pages: allPages, totalPages };
+  return allLines;
 }
 
-/**
- * Findet den ersten echten Inhaltsbereich: überspringt Cover, Inhaltsverzeichnis
- * und Copyright-Seiten (haben keine 4x-kodierten Items).
- */
-function findContentStart(pages: string[][]): number {
-  for (let i = 0; i < pages.length; i++) {
-    if (pages[i].some(l => l.startsWith('\x01'))) return i;
-  }
-  return 0; // Fallback: ab Seite 0
-}
-
-function splitIntoChapters(pages: string[][], filename: string) {
+/** Baut Kapitel-Struktur aus den extrahierten Zeilen */
+function buildChapters(lines: LineItem[], filename: string) {
   const chapters: any[] = [];
   let currentTitle = 'Einleitung';
   let currentLines: string[] = [];
   let chapterNum = 0;
   let pendingNumber: string | null = null;
+  let pendingNumberY: number | null = null;
 
-  // Überschrift-Pattern (nach Dekodierung)
-  const chapterHeadingRe =
-    /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\\/\-]{2,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Antworten zu den Kontrollfragen)$/;
-
-  // TOC-Einträge: "1.1 Titel 5" (endet auf Seitenzahl)
-  const isTocEntry = (s: string) => /\s\d{1,3}$/.test(s) && /^\d/.test(s);
+  // Überschrift-Pattern: "1 Titel", "1.2 Titel", oder bekannte Sektionsnamen
+  const chapterHeadingRe = /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-()]{2,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Stichwortverzeichnis|Antworten zu den Kontrollfragen)$/;
 
   const flush = () => {
     if (currentLines.length === 0) return;
@@ -150,80 +123,86 @@ function splitIntoChapters(pages: string[][], filename: string) {
       audio_status: 'pending',
       created_at: new Date().toISOString(),
     });
+    currentLines = [];
   };
 
-  const startPage = findContentStart(pages);
+  for (const line of lines) {
+    const text = line.isEncoded ? line.deduped : line.text;
+    const trimmed = text.trim();
+    if (!trimmed) continue;
 
-  for (const page of pages.slice(startPage)) {
-    for (const rawLine of page) {
-      const isRepeated = rawLine.startsWith('\x01');
-      const trimmed = isRepeated ? rawLine.slice(1) : rawLine;
-      if (!trimmed) continue;
+    // Kapitel-/Abschnittsnummer aus encoded Line (z.B. "1", "1.2", "1.4.3")
+    // WICHTIG: Nummern können einstellig sein ("1"), nicht filtern!
+    if (line.isEncoded && /^\d+(?:\.\d+)*$/.test(trimmed)) {
+      pendingNumber = trimmed;
+      pendingNumberY = line.y;
+      continue;
+    }
 
-      // 4x-kodierte reine Zahl = Kapitelnummer (z.B. "1", "1.2", "2.3.1")
-      if (isRepeated && /^\d+(?:\.\d+)*$/.test(trimmed)) {
-        pendingNumber = trimmed;
-        continue;
-      }
+    // Erst nach Nummer-Check für Längenfil filter apply
+    if (trimmed.length < 2) continue;
 
-      // Überschrift-Erkennung
-      let isHeading = false;
-      let headingTitle = trimmed;
+    let isHeading = false;
+    let headingTitle = trimmed;
 
-      if (pendingNumber !== null) {
-        const combined = `${pendingNumber} ${trimmed}`;
-        if (chapterHeadingRe.test(combined) && !isTocEntry(combined)) {
-          headingTitle = combined;
-          isHeading = true;
-        }
-        pendingNumber = null;
-      }
-
-      // Direkte Überschrift (z.B. "Einleitung und Lernziele" als 4x-kodiert)
-      if (!isHeading && isRepeated && chapterHeadingRe.test(trimmed) && !isTocEntry(trimmed)) {
+    // Encoded Nummer + encoded Titel = Überschrift
+    if (pendingNumber !== null && pendingNumberY !== null) {
+      const combined = `${pendingNumber} ${trimmed}`;
+      // FIX: y-Abstand muss klein sein (echter Kapitelheader vs. Diagramm-Label weit entfernt)
+      // Echte Kapitel-Überschriften haben Nummer und Titel nah beieinander (≤40pt)
+      const yGap = pendingNumberY - line.y;
+      if (line.isEncoded && chapterHeadingRe.test(combined) && yGap < 40) {
+        headingTitle = combined;
         isHeading = true;
-        headingTitle = trimmed;
       }
+      pendingNumber = null;
+      pendingNumberY = null;
+    }
 
-      if (isHeading) {
-        if (currentLines.length > 0 || chapters.length > 0) flush();
-        currentTitle = headingTitle;
-        currentLines = [];
-      } else {
-        // Sehr kurze Zeilen (Formel-Variablen, Einzelbuchstaben) überspringen
-        if (trimmed.length > 3) {
-          currentLines.push(trimmed);
-        }
+    // Direkte Überschriften-Erkennung für encoded Zeilen (z.B. "Zusammenfassung" 4x)
+    if (!isHeading && line.isEncoded && chapterHeadingRe.test(trimmed)) {
+      isHeading = true;
+    }
+
+    if (isHeading) {
+      flush();
+      currentTitle = headingTitle;
+      currentLines = [];
+    } else {
+      // Body-Text: nur wenn sinnvoll lang
+      if (trimmed.length > 2) {
+        currentLines.push(trimmed);
       }
     }
   }
 
   flush();
 
-  // Fallback: kein Kapitel erkannt → nach Wortanzahl splitten
+  // Fallback: falls nur 1 Kapitel erkannt → nach Wortanzahl splitten
   if (chapters.length <= 1) {
-    const allText = pages
-      .slice(startPage)
-      .flatMap(p => p.map(l => (l.startsWith('\x01') ? l.slice(1) : l)))
-      .filter(l => l.length > 3)
-      .join(' ');
-    const words = allText.split(/\s+/).filter(Boolean);
+    const words = lines
+      .map((l) => (l.isEncoded ? l.deduped : l.text))
+      .join(' ')
+      .split(/\s+/)
+      .filter(Boolean);
     const chunkSize = 1500;
-    return Array.from({ length: Math.ceil(words.length / chunkSize) }, (_, i) => {
-      const chunk = words.slice(i * chunkSize, (i + 1) * chunkSize).join(' ');
-      const wc = chunk.split(/\s+/).length;
-      return {
+    const result: any[] = [];
+    for (let i = 0; i < words.length; i += chunkSize) {
+      const chunk = words.slice(i, i + chunkSize).join(' ');
+      const num = Math.floor(i / chunkSize) + 1;
+      result.push({
         id: generateId(),
-        chapter_num: i + 1,
-        title: `Teil ${i + 1}`,
+        chapter_num: num,
+        title: `Teil ${num}`,
         cleaned_text: chunk,
-        word_count: wc,
-        duration_seconds: Math.round(wc / 2.5),
+        word_count: words.slice(i, i + chunkSize).length,
+        duration_seconds: Math.round(words.slice(i, i + chunkSize).length / 2.5),
         audio_path: null,
         audio_status: 'pending',
         created_at: new Date().toISOString(),
-      };
-    });
+      });
+    }
+    return result;
   }
 
   return chapters;
@@ -235,28 +214,29 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File;
 
     if (!file) {
-      return NextResponse.json(
-        { error: 'No file provided', success: false },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'No file provided', success: false }, { status: 400 });
     }
+
     if (!file.name.endsWith('.pdf')) {
-      return NextResponse.json(
-        { error: 'Only PDF files are supported', success: false },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Only PDF files are supported', success: false }, { status: 400 });
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-    const { pages, totalPages } = await extractWithPDFjs(uint8);
-
+    // PDF.js Extraktion mit Positionsdaten
+    const lines = await extractPDFLayout(uint8);
     const documentId = generateId();
-    const chaptersRaw = splitIntoChapters(pages, file.name);
-    const chapters = chaptersRaw.map(ch => ({ ...ch, document_id: documentId }));
+    const chaptersRaw = buildChapters(lines, file.name);
 
-    const totalWords = chapters.reduce((s, c) => s + c.word_count, 0);
+    const chapters = chaptersRaw.map((ch) => ({
+      ...ch,
+      document_id: documentId,
+    }));
+
+    const totalWords = chapters.reduce((sum, ch) => sum + ch.word_count, 0);
+    const totalPages = Math.ceil(lines.length / 15); // Rough estimate
+
     const document = {
       id: documentId,
       filename: file.name,
@@ -265,12 +245,10 @@ export async function POST(request: NextRequest) {
       last_accessed: new Date().toISOString(),
       created_at: new Date().toISOString(),
       status: 'ready',
-      extraction: `${totalPages} Seiten, ${totalWords} Wörter, ${chapters.length} Kapitel (PDF.js)`,
+      extraction: `~${totalPages} Seiten, ${totalWords} Wörter, ${chapters.length} Kapitel`,
     };
 
-    console.log(
-      `[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${totalPages} Seiten, ${totalWords} Wörter`
-    );
+    console.log(`[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${totalWords} Wörter`);
 
     return NextResponse.json({
       success: true,
