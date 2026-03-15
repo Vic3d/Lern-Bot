@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 interface PDFViewerProps {
-  pdfBytes: ArrayBuffer;
+  pdfBytes: ArrayBuffer | Uint8Array;
   currentPage?: number;
   onPageChange?: (page: number) => void;
 }

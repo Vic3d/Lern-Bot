@@ -33,7 +33,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [pdfBytes, setPdfBytes] = useState<ArrayBuffer | null>(null);
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('pdf');
   const [highlightChar, setHighlightChar] = useState(-1);
   const [bionicReading, setBionicReading] = useState(false);
@@ -62,7 +62,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
 
     // PDF aus IndexedDB laden
     loadPDF(params.id).then(bytes => {
-      if (bytes) setPdfBytes(bytes);
+      if (bytes) setPdfBytes(new Uint8Array(bytes));
       else setViewMode('text'); // kein PDF → Text-Ansicht
     }).catch(() => setViewMode('text'));
 
