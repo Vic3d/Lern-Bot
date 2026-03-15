@@ -92,23 +92,18 @@ export default function PDFViewer({
   startPageRef.current = startPage;
   endPageRef.current = endPage;
 
-  // ── PDF.js von CDN laden ───────────────────────────────────────────────────
+  // ── PDF.js via npm-Import (kein CDN-Konflikt) ─────────────────────────────
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const init = () => {
-      (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    import('pdfjs-dist').then((pdfjs) => {
+      // Worker-URL von jsdelivr — muss exakt zur npm-Version passen
+      pdfjs.GlobalWorkerOptions.workerSrc =
+        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+      (window as any).pdfjsLib = pdfjs;
       initPDF();
-    };
-    if ((window as any).pdfjsLib) { init(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    s.onload = init;
-    s.onerror = () => setError('PDF.js konnte nicht geladen werden');
-    document.head.appendChild(s);
+    }).catch((e) => setError('PDF.js Ladefehler: ' + e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
   // Neu laden wenn pdfBytes sich ändern
   useEffect(() => {
     if ((window as any)?.pdfjsLib && pdfBytes?.length) initPDF();
