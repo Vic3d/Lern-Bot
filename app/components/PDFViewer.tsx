@@ -1,280 +1,492 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface PDFViewerProps {
   pdfBytes: Uint8Array;
   chapterText?: string;
   highlightCharIndex?: number;
-  onTextClick?: (charIndex: number) => void;
+  onSeekToChar?: (charIndex: number) => void;
 }
 
-interface WordEntry {
-  word: string;
-  charStart: number;
-  charEnd: number;
+interface TextItem {
+  str: string;
+  globalStart: number;
+  globalEnd: number;
+  pageNum: number;
+  itemIndex: number; // index in page's tc.items array
+  spanEl?: HTMLSpanElement;
 }
 
-function buildWordList(text: string): WordEntry[] {
-  const list: WordEntry[] = [];
-  const regex = /\S+/g;
-  let m;
-  while ((m = regex.exec(text)) !== null) {
-    list.push({ word: m[0].toLowerCase().replace(/[^a-z0-9äöüß]/g, ''), charStart: m.index, charEnd: m.index + m[0].length });
+function findChapterStart(fullText: string, chapterText: string): number {
+  if (!chapterText || !fullText) return 0;
+
+  const lengths = [150, 80, 40];
+  for (const len of lengths) {
+    const needle = chapterText.substring(0, len);
+
+    // Direct match
+    const direct = fullText.indexOf(needle);
+    if (direct >= 0) return direct;
+
+    // Normalized whitespace match
+    const normFull = fullText.replace(/\s+/g, ' ');
+    const normNeedle = needle.replace(/\s+/g, ' ');
+    const normIdx = normFull.indexOf(normNeedle);
+    if (normIdx >= 0) return normIdx;
   }
-  return list.filter(w => w.word.length > 0);
+  return 0;
 }
 
-export default function PDFViewer({ pdfBytes, chapterText = '', highlightCharIndex = -1, onTextClick }: PDFViewerProps) {
+export default function PDFViewer({
+  pdfBytes,
+  chapterText = '',
+  highlightCharIndex = -1,
+  onSeekToChar,
+}: PDFViewerProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pdfDoc, setPdfDoc] = useState<any>(null);
+
   const [totalPages, setTotalPages] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
   const [scale, setScale] = useState(1.3);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [renderedPages, setRenderedPages] = useState<Set<number>>(new Set());
 
-  // Word matching state
-  const spanWordMapRef = useRef<{ el: HTMLElement; word: string; idx: number }[]>([]);
-  const wordListRef = useRef<WordEntry[]>([]);
-  const matchCursorRef = useRef(0);
-  const highlightedElRef = useRef<HTMLElement | null>(null);
+  // PDF internals
+  const pdfDocRef = useRef<any>(null);
+  const cachedPagesRef = useRef<any[]>([]);
+  const cachedTextContentsRef = useRef<any[]>([]);
+  const textItemsRef = useRef<TextItem[]>([]);
+  const fullPdfTextRef = useRef('');
 
-  // Load PDF.js CDN
+  // Chapter position cache
+  const chapterStartRef = useRef(-1);
+  const chapterTextCacheRef = useRef('');
+
+  // Highlight tracking
+  const highlightedSpanRef = useRef<HTMLSpanElement | null>(null);
+
+  // Observers
+  const lazyObserverRef = useRef<IntersectionObserver | null>(null);
+  const pageObserverRef = useRef<IntersectionObserver | null>(null);
+  const renderedPagesRef = useRef(new Set<number>());
+
+  // Always-fresh refs for closures
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+
+  const chapterTextRef = useRef(chapterText);
+  chapterTextRef.current = chapterText;
+
+  const onSeekToCharRef = useRef(onSeekToChar);
+  onSeekToCharRef.current = onSeekToChar;
+
+  // ── Load PDF.js from CDN once ──────────────────────────────────────────────
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const load = () => {
+    const init = () => {
       (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
         'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
       initPDF();
     };
-    if ((window as any).pdfjsLib) { load(); return; }
+    if ((window as any).pdfjsLib) { init(); return; }
     const s = document.createElement('script');
     s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    s.onload = load;
+    s.onload = init;
     s.onerror = () => setError('PDF.js konnte nicht geladen werden');
     document.head.appendChild(s);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Reload when pdfBytes change
+  useEffect(() => {
+    if ((window as any)?.pdfjsLib && pdfBytes?.length) initPDF();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfBytes]);
+
+  // Rebuild layout on scale change (text map stays)
+  useEffect(() => {
+    if (pdfDocRef.current && cachedPagesRef.current.length) {
+      rebuildLayout();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scale]);
+
+  // Reset chapter cache when chapterText changes
+  useEffect(() => {
+    chapterStartRef.current = -1;
+    chapterTextCacheRef.current = '';
+  }, [chapterText]);
+
+  // ── Highlight logic ────────────────────────────────────────────────────────
+  useEffect(() => {
+    clearHighlight();
+    if (highlightCharIndex < 0 || !chapterText) return;
+
+    const chStart = getChapterStart();
+    const pdfOffset = chStart + highlightCharIndex;
+    const items = textItemsRef.current;
+    if (!items.length) return;
+
+    // Binary search for the item containing pdfOffset
+    let lo = 0, hi = items.length - 1, found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].globalEnd <= pdfOffset) lo = mid + 1;
+      else if (items[mid].globalStart > pdfOffset) hi = mid - 1;
+      else { found = mid; break; }
+    }
+    if (found < 0) found = Math.min(lo, items.length - 1);
+
+    const item = items[found];
+    if (item?.spanEl) {
+      item.spanEl.classList.add('pdf-hl');
+      highlightedSpanRef.current = item.spanEl;
+      item.spanEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightCharIndex, chapterText]);
+
+  // Cleanup observers on unmount
+  useEffect(() => {
+    return () => {
+      lazyObserverRef.current?.disconnect();
+      pageObserverRef.current?.disconnect();
+    };
+  }, []);
+
+  // ── PDF init ───────────────────────────────────────────────────────────────
   async function initPDF() {
     try {
       setLoading(true);
       setError(null);
       const pdfjsLib = (window as any).pdfjsLib;
-      const data = new Uint8Array(pdfBytes); // fresh copy
-      const doc = await pdfjsLib.getDocument({ data }).promise;
-      setPdfDoc(doc);
+      const doc = await pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) }).promise;
+      pdfDocRef.current = doc;
       setTotalPages(doc.numPages);
-      wordListRef.current = buildWordList(chapterText);
+      await loadAllTextContent(doc);
+      rebuildLayout();
     } catch (e: any) {
-      setError('PDF konnte nicht geladen werden: ' + e.message);
+      setError('PDF Ladefehler: ' + e.message);
     } finally {
       setLoading(false);
     }
   }
 
-  // Re-init when bytes change
-  useEffect(() => {
-    if ((window as any)?.pdfjsLib && pdfBytes) initPDF();
-  }, [pdfBytes]);
+  async function loadAllTextContent(doc: any) {
+    const pages: any[] = [];
+    const textContents: any[] = [];
+    const textItems: TextItem[] = [];
+    let offset = 0;
 
-  // Re-init word list when chapter changes
-  useEffect(() => {
-    wordListRef.current = buildWordList(chapterText);
-    matchCursorRef.current = 0;
-    spanWordMapRef.current = [];
-    clearHighlight();
-  }, [chapterText]);
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      pages.push(page);
+      textContents.push(tc);
 
-  // Render all pages when pdfDoc or scale changes
-  useEffect(() => {
-    if (!pdfDoc) return;
-    spanWordMapRef.current = [];
-    matchCursorRef.current = 0;
-    setRenderedPages(new Set());
-    renderAllPages();
-  }, [pdfDoc, scale]);
+      for (let i = 0; i < tc.items.length; i++) {
+        const raw = tc.items[i] as any;
+        if (!raw.str) continue;
+        textItems.push({
+          str: raw.str,
+          globalStart: offset,
+          globalEnd: offset + raw.str.length,
+          pageNum: p,
+          itemIndex: i,
+        });
+        offset += raw.str.length;
+      }
+    }
 
-  async function renderAllPages() {
-    if (!pdfDoc || !containerRef.current) return;
+    cachedPagesRef.current = pages;
+    cachedTextContentsRef.current = textContents;
+    textItemsRef.current = textItems;
+    fullPdfTextRef.current = textItems.map(i => i.str).join('');
+    chapterStartRef.current = -1;
+    chapterTextCacheRef.current = '';
+  }
+
+  // ── Layout builder ─────────────────────────────────────────────────────────
+  function rebuildLayout() {
     const container = containerRef.current;
+    if (!container || !cachedPagesRef.current.length) return;
+
+    lazyObserverRef.current?.disconnect();
+    pageObserverRef.current?.disconnect();
+    renderedPagesRef.current.clear();
+    clearHighlight();
+
+    // Clear all spanEl refs (they'll be re-linked when pages render)
+    for (const item of textItemsRef.current) item.spanEl = undefined;
+
     container.innerHTML = '';
-    spanWordMapRef.current = [];
+    injectCSS();
 
-    for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
-      const page = await pdfDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale });
+    const currentScale = scaleRef.current;
+    const numPages = cachedPagesRef.current.length;
 
-      // Page wrapper
+    // Page-visibility observer (updates "Seite X / N" display)
+    const pageObs = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter(e => e.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+      if (visible.length) {
+        const pg = parseInt((visible[0].target as HTMLElement).dataset.page || '1');
+        setCurrentPage(pg);
+      }
+    }, { root: scrollRef.current, threshold: 0.3 });
+    pageObserverRef.current = pageObs;
+
+    // Lazy-render observer (renders pages when they enter viewport ± 600px)
+    const lazyObs = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        const el = entry.target as HTMLElement;
+        const pg = parseInt(el.dataset.page || '0');
+        if (pg > 0 && !renderedPagesRef.current.has(pg)) {
+          renderedPagesRef.current.add(pg);
+          lazyObs.unobserve(el);
+          renderPage(pg, el);
+        }
+      });
+    }, { root: scrollRef.current, rootMargin: '600px 0px', threshold: 0 });
+    lazyObserverRef.current = lazyObs;
+
+    // Create placeholder divs for all pages
+    for (let p = 1; p <= numPages; p++) {
+      const viewport = cachedPagesRef.current[p - 1]?.getViewport({ scale: currentScale });
+      const w = viewport?.width ?? 600;
+      const h = viewport?.height ?? 800;
+
       const wrapper = document.createElement('div');
-      wrapper.style.cssText = `position:relative; margin:0 auto 12px; width:${viewport.width}px; height:${viewport.height}px; background:white; box-shadow:0 2px 12px rgba(0,0,0,0.3); border-radius:2px;`;
-      wrapper.dataset.page = String(pageNum);
-
-      // Canvas for PDF rendering
-      const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.cssText = 'position:absolute; top:0; left:0; display:block;';
-      wrapper.appendChild(canvas);
-
-      // Text layer div
-      const textLayerDiv = document.createElement('div');
-      textLayerDiv.style.cssText = `position:absolute; top:0; left:0; width:${viewport.width}px; height:${viewport.height}px; overflow:hidden; line-height:1; pointer-events:auto; user-select:none; cursor:text;`;
-      textLayerDiv.className = 'pdf-text-layer';
-      wrapper.appendChild(textLayerDiv);
+      wrapper.dataset.page = String(p);
+      wrapper.style.cssText = [
+        'position:relative',
+        `width:${w}px`,
+        `height:${h}px`,
+        'margin:0 auto 16px',
+        'background:white',
+        'box-shadow:0 2px 12px rgba(0,0,0,0.3)',
+        'border-radius:2px',
+        'flex-shrink:0',
+      ].join(';');
 
       container.appendChild(wrapper);
-
-      // Render PDF page to canvas
-      const ctx = canvas.getContext('2d')!;
-      await page.render({ canvasContext: ctx, viewport }).promise;
-
-      // Render text layer
-      const textContent = await page.getTextContent();
-      const pdfjsLib = (window as any).pdfjsLib;
-
-      // Inject text layer CSS once
-      if (!document.getElementById('pdf-tl-style')) {
-        const style = document.createElement('style');
-        style.id = 'pdf-tl-style';
-        style.textContent = `
-          .pdf-text-layer span {
-            position: absolute;
-            white-space: pre;
-            transform-origin: 0% 0%;
-            cursor: text;
-            color: transparent;
-            transition: background 0.15s;
-            border-radius: 2px;
-          }
-          .pdf-text-layer span:hover { background: rgba(59,130,246,0.1); }
-          .pdf-word-highlight {
-            background: rgba(251,191,36,0.5) !important;
-            box-shadow: 0 0 0 1px rgba(251,191,36,0.8);
-            border-radius: 2px;
-          }
-        `;
-        document.head.appendChild(style);
-      }
-
-      const textDivs: HTMLElement[] = [];
-      await pdfjsLib.renderTextLayer({
-        textContent,
-        container: textLayerDiv,
-        viewport,
-        textDivs,
-      }).promise;
-
-      // Map text spans to words in chapterText
-      let spanIdx = spanWordMapRef.current.length;
-      for (const div of textDivs) {
-        const raw = div.textContent || '';
-        const words = raw.match(/\S+/g) || [];
-        for (const w of words) {
-          const clean = w.toLowerCase().replace(/[^a-z0-9äöüß]/g, '');
-          if (clean.length > 0) {
-            spanWordMapRef.current.push({ el: div, word: clean, idx: spanIdx++ });
-          }
-        }
-        // Click handler
-        div.addEventListener('click', (e) => handleTextClick(e, div, textContent, textDivs));
-      }
-
-      setRenderedPages(prev => new Set([...prev, pageNum]));
+      pageObs.observe(wrapper);
+      lazyObs.observe(wrapper);
     }
   }
 
-  function handleTextClick(e: MouseEvent, div: HTMLElement, textContent: any, textDivs: HTMLElement[]) {
-    if (!onTextClick) return;
-    // Find which word in our word map this span corresponds to
-    const spanEntry = spanWordMapRef.current.find(s => s.el === div);
-    if (!spanEntry) return;
+  // ── Page renderer (called lazily) ──────────────────────────────────────────
+  async function renderPage(pageNum: number, wrapper: HTMLElement) {
+    const pdfjsLib = (window as any).pdfjsLib;
+    const page = cachedPagesRef.current[pageNum - 1];
+    const tc = cachedTextContentsRef.current[pageNum - 1];
+    if (!page || !tc) return;
 
-    // Find matching word in chapterText word list
-    const wordList = wordListRef.current;
-    // Search around the current span's position in the word map
-    const spanMapIdx = spanWordMapRef.current.indexOf(spanEntry);
-    // Find the closest chapterText word match
-    const ratio = wordList.length > 0 ? spanMapIdx / Math.max(1, spanWordMapRef.current.length) : 0;
-    const approxWordIdx = Math.floor(ratio * wordList.length);
-    const charIndex = wordList[approxWordIdx]?.charStart ?? 0;
-    onTextClick(charIndex);
-    matchCursorRef.current = approxWordIdx;
+    const currentScale = scaleRef.current;
+    const viewport = page.getViewport({ scale: currentScale });
+
+    // Sync wrapper size (in case it changed from estimate)
+    wrapper.style.width = viewport.width + 'px';
+    wrapper.style.height = viewport.height + 'px';
+
+    // Canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    canvas.style.cssText = 'position:absolute;top:0;left:0;display:block;';
+    wrapper.appendChild(canvas);
+    await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
+
+    // Text layer
+    const tl = document.createElement('div');
+    tl.style.cssText = [
+      'position:absolute', 'top:0', 'left:0',
+      `width:${viewport.width}px`,
+      `height:${viewport.height}px`,
+      'overflow:hidden',
+      'pointer-events:auto',
+    ].join(';');
+    wrapper.appendChild(tl);
+
+    // Build itemIndex → TextItem map for this page
+    const pageItems = textItemsRef.current.filter(i => i.pageNum === pageNum);
+    const itemMap = new Map<number, TextItem>();
+    for (const ti of pageItems) itemMap.set(ti.itemIndex, ti);
+
+    // Create spans
+    for (let i = 0; i < tc.items.length; i++) {
+      const raw = tc.items[i] as any;
+      if (!raw.str) continue;
+
+      const span = document.createElement('span');
+      span.textContent = raw.str;
+
+      const tx = pdfjsLib.Util.transform(viewport.transform, raw.transform);
+      const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+
+      span.style.cssText = [
+        'position:absolute',
+        `left:${tx[4]}px`,
+        `top:${tx[5] - fontHeight}px`,
+        `font-size:${fontHeight}px`,
+        `font-family:${raw.fontName || 'sans-serif'}`,
+        'color:transparent',
+        'white-space:pre',
+        'cursor:pointer',
+        'user-select:none',
+        'border-radius:2px',
+        'transition:background 0.1s',
+      ].join(';');
+
+      // Apply horizontal scale if needed for correct width
+      if (raw.width && raw.width > 0 && fontHeight > 0 && raw.str.length > 0) {
+        const sx = (raw.width * currentScale) / (raw.str.length * fontHeight * 0.55);
+        if (Math.abs(sx - 1) > 0.1) {
+          span.style.transform = `scaleX(${sx.toFixed(4)})`;
+          span.style.transformOrigin = '0% 0%';
+        }
+      }
+
+      // Link span to TextItem
+      const textItem = itemMap.get(i);
+      if (textItem) textItem.spanEl = span;
+
+      // Click: seek TTS to this position
+      const capturedItem = textItem;
+      span.addEventListener('click', () => {
+        const cb = onSeekToCharRef.current;
+        if (!cb || !capturedItem) return;
+        const chStart = getChapterStart();
+        const charInChapter = capturedItem.globalStart - chStart;
+        const ct = chapterTextRef.current || '';
+        const clamped = Math.max(0, Math.min(charInChapter, ct.length - 1));
+        cb(clamped);
+      });
+
+      span.addEventListener('mouseenter', () => {
+        if (!span.classList.contains('pdf-hl'))
+          span.style.background = 'rgba(59,130,246,0.15)';
+      });
+      span.addEventListener('mouseleave', () => {
+        if (!span.classList.contains('pdf-hl'))
+          span.style.background = '';
+      });
+
+      tl.appendChild(span);
+    }
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function getChapterStart(): number {
+    const ct = chapterTextRef.current;
+    if (ct === chapterTextCacheRef.current && chapterStartRef.current >= 0) {
+      return chapterStartRef.current;
+    }
+    const start = findChapterStart(fullPdfTextRef.current, ct);
+    chapterStartRef.current = start;
+    chapterTextCacheRef.current = ct;
+    return start;
   }
 
   function clearHighlight() {
-    if (highlightedElRef.current) {
-      highlightedElRef.current.classList.remove('pdf-word-highlight');
-      highlightedElRef.current = null;
+    if (highlightedSpanRef.current) {
+      highlightedSpanRef.current.classList.remove('pdf-hl');
+      highlightedSpanRef.current.style.background = '';
+      highlightedSpanRef.current = null;
     }
   }
 
-  // Highlight + scroll when TTS position changes
-  useEffect(() => {
-    if (highlightCharIndex < 0 || wordListRef.current.length === 0 || spanWordMapRef.current.length === 0) {
-      clearHighlight();
-      return;
-    }
+  function injectCSS() {
+    if (document.getElementById('pdf-viewer-v2-style')) return;
+    const s = document.createElement('style');
+    s.id = 'pdf-viewer-v2-style';
+    s.textContent = `
+      .pdf-hl {
+        background: rgba(232, 184, 0, 0.45) !important;
+        border-radius: 2px;
+        color: transparent;
+      }
+    `;
+    document.head.appendChild(s);
+  }
 
-    // Find word in chapterText that contains highlightCharIndex
-    const words = wordListRef.current;
-    let wordIdx = words.findIndex(w => w.charStart <= highlightCharIndex && highlightCharIndex < w.charEnd);
-    if (wordIdx < 0) {
-      // find closest
-      wordIdx = words.findIndex(w => w.charStart >= highlightCharIndex);
-      if (wordIdx < 0) wordIdx = words.length - 1;
-    }
-
-    // Map word index to span: use ratio
-    const ratio = wordIdx / Math.max(1, words.length - 1);
-    const spanIdx = Math.floor(ratio * (spanWordMapRef.current.length - 1));
-    const span = spanWordMapRef.current[spanIdx];
-    if (!span) return;
-
-    clearHighlight();
-    span.el.classList.add('pdf-word-highlight');
-    highlightedElRef.current = span.el;
-
-    // Auto-scroll
-    span.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [highlightCharIndex]);
-
-  const scrollToTop = () => containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  // ── Toolbar style ──────────────────────────────────────────────────────────
+  const tb: React.CSSProperties = {
+    padding: '3px 9px',
+    background: 'rgba(255,255,255,0.15)',
+    border: 'none',
+    borderRadius: '4px',
+    color: 'white',
+    cursor: 'pointer',
+    fontSize: '13px',
+  };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#525659', borderRadius: '12px', overflow: 'hidden' }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: '#3d3f41', flexShrink: 0 }}>
+    <div style={{
+      display: 'flex', flexDirection: 'column',
+      height: '100%', background: '#525659',
+      borderRadius: '12px', overflow: 'hidden',
+    }}>
+      {/* ── Toolbar ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '8px 12px', background: '#3d3f41',
+        flexShrink: 0, gap: '8px',
+      }}>
+        <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.7)', whiteSpace: 'nowrap' }}>
+          Seite {currentPage} / {totalPages}
+        </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <button onClick={scrollToTop} style={tb}>↑ Top</button>
-          <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)' }}>{totalPages} Seiten</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <button onClick={() => setScale(s => Math.max(0.5, s - 0.2))} style={tb}>−</button>
-          <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.7)', minWidth: '36px', textAlign: 'center' }}>{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => Math.min(3, s + 0.2))} style={tb}>+</button>
-          <button onClick={() => setScale(1.3)} style={{ ...tb, fontSize: '10px' }}>Reset</button>
+          <button
+            onClick={() => setScale(s => parseFloat(Math.max(0.5, s - 0.2).toFixed(1)))}
+            style={tb}
+          >−</button>
+          <span style={{
+            fontSize: '11px', color: 'rgba(255,255,255,0.7)',
+            minWidth: '38px', textAlign: 'center',
+          }}>{Math.round(scale * 100)}%</span>
+          <button
+            onClick={() => setScale(s => parseFloat(Math.min(3.0, s + 0.2).toFixed(1)))}
+            style={tb}
+          >+</button>
+          <button onClick={() => setScale(1.3)} style={{ ...tb, fontSize: '10px' }}>
+            Reset
+          </button>
         </div>
       </div>
 
-      {/* Scroll container */}
-      <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', padding: '20px', background: '#525659', position: 'relative' }}>
+      {/* ── Scroll container ── */}
+      <div
+        ref={scrollRef}
+        style={{
+          flex: 1, overflowY: 'auto', overflowX: 'auto',
+          padding: '20px', background: '#525659',
+        }}
+      >
         {loading && (
-          <div style={{ color: 'rgba(255,255,255,0.6)', textAlign: 'center', padding: '60px 20px' }}>
-            ⏳ PDF wird geladen...
+          <div style={{
+            color: 'rgba(255,255,255,0.7)', textAlign: 'center',
+            padding: '60px 20px', fontSize: '15px',
+          }}>
+            ⏳ PDF wird geladen…
           </div>
         )}
         {error && (
-          <div style={{ color: '#fca5a5', textAlign: 'center', padding: '40px 20px' }}>⚠️ {error}</div>
+          <div style={{ color: '#fca5a5', textAlign: 'center', padding: '40px 20px' }}>
+            ⚠️ {error}
+          </div>
         )}
-        {/* Pages are imperatively injected here by renderAllPages() */}
-        <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }} />
+        {/* Pages are injected imperatively by rebuildLayout / renderPage */}
+        <div
+          ref={containerRef}
+          style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}
+        />
       </div>
     </div>
   );
 }
-
-const tb: React.CSSProperties = {
-  padding: '3px 9px', background: 'rgba(255,255,255,0.1)', border: 'none',
-  borderRadius: '4px', color: 'white', cursor: 'pointer', fontSize: '13px',
-};

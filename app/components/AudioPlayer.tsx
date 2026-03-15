@@ -10,9 +10,10 @@ interface AudioPlayerProps {
   speed: number;
   onSpeedChange: (speed: number) => void;
   startFromChar?: number; // wenn gesetzt → TTS startet ab dieser Position
+  seekToChar?: number | null; // reaktiv: TTS-Neustart ab dieser Zeichenposition
 }
 
-export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange, startFromChar }: AudioPlayerProps) {
+export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange, startFromChar, seekToChar }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -53,6 +54,32 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
     setIsPlaying(true);
     setTtsPaused(false);
   }, [startFromChar]);
+
+  // seekToChar: reaktiver Seek aus dem PDF-Viewer (Klick auf Wort)
+  useEffect(() => {
+    if (seekToChar == null) return;
+    if (hasAudio && audioRef.current) {
+      // Bei echtem Audio: Zeit-Position schätzen und springen
+      const text = chapter.cleaned_text || '';
+      const dur = audioRef.current.duration || ttsDurationRef.current;
+      const ratio = text.length > 0 ? seekToChar / text.length : 0;
+      audioRef.current.currentTime = ratio * dur;
+      audioRef.current.play().catch(() => {});
+      setIsPlaying(true);
+      return;
+    }
+    // TTS: Neustart ab Zeichenposition
+    const text = chapter.cleaned_text || '';
+    const dur = ttsDurationRef.current;
+    const ratio = text.length > 0 ? seekToChar / text.length : 0;
+    const timePos = ratio * dur;
+    ttsProgressRef.current = timePos;
+    setCurrentTime(timePos);
+    startTTS(timePos);
+    setIsPlaying(true);
+    setTtsPaused(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seekToChar]);
 
   useEffect(() => {
     const audio = audioRef.current;
