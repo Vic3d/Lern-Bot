@@ -12,6 +12,14 @@ interface AudioPlayerProps {
   seekToChar?: { char: number; seq: number } | null; // reaktiv: TTS-Neustart
 }
 
+function cleanTitle(title: string): string {
+  const sep = title.lastIndexOf(' — ');
+  if (sep > 0) return title.substring(sep + 3).trim();
+  const sep2 = title.lastIndexOf(' - ');
+  if (sep2 > 0 && sep2 > title.length / 2) return title.substring(sep2 + 3).trim();
+  return title;
+}
+
 export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, speed, onSpeedChange, seekToChar }: AudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -166,7 +174,7 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
     <div style={{ background: 'var(--off-white)', borderRadius: '12px', padding: '28px', border: '1px solid var(--border)' }}>
       {hasAudio && <audio ref={audioRef} src={`/api/chapters/${chapter.id}/audio`} onEnded={() => { setIsPlaying(false); onEnded?.(); }} />}
 
-      <h2 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '20px', color: 'var(--text)' }}>🎵 {chapter.title}</h2>
+      <h2 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '20px', color: 'var(--text)' }}>🎵 {cleanTitle(chapter.title)}</h2>
 
       {!hasAudio && hasTTS && (
         <div style={{ background: '#e0f2fe', border: '1px solid #0284c7', color: '#0369a1', padding: '10px 14px', borderRadius: '8px', marginBottom: '16px', fontSize: '13px' }}>

@@ -52,10 +52,13 @@ def split_chapters(text: str, filename: str):
     # Muss im Format "x.y Titel" oder "x.y.z Titel" sein (Punkt-Notation nötig)
     # Erlaubt nur Buchstaben, Leerzeichen, Umlaute, Bindestrich und /
     heading_pattern = re.compile(
-        r'^(\d+\.\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-]{3,70}'
+        r'^('
+        r'\d+\.\d+(?:\.\d+)*\s+[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß /\-]{2,70}'  # 1.1 Titel
+        r'|\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-]{3,70}'  # 1 Titel (Großbuchstabe)
         r'|Einleitung(?:\s*/\s*Lernziele)?'
         r'|Einleitung\s*und\s*Lernziele'
         r'|Zusammenfassung'
+        r'|Lernziele'
         r')$'
     )
 
@@ -106,7 +109,7 @@ def split_chapters(text: str, filename: str):
             num = i // chunk_size + 1
             chapters.append({
                 "chapter_num": num,
-                "title": f"{filename} — Teil {num}",
+                "title": f"Teil {num}",
                 "text": chunk,
                 "word_count": len(words[i:i + chunk_size]),
                 "duration_seconds": round(len(words[i:i + chunk_size]) / 2.5)

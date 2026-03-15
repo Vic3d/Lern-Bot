@@ -16,14 +16,24 @@ function getChapters(docId: string): any[] {
   try { return JSON.parse(localStorage.getItem(CHAPTERS_KEY(docId)) || '[]'); } catch { return []; }
 }
 
-function saveProgress(docId: string, chapterIndex: number) {
+function saveProgress(docId: string, chapterIndex: number, charOffset = 0) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(PROGRESS_KEY(docId), JSON.stringify({ chapterIndex, ts: Date.now() }));
+  localStorage.setItem(PROGRESS_KEY(docId), JSON.stringify({ chapterIndex, charOffset, ts: Date.now() }));
 }
 
-function loadProgress(docId: string): { chapterIndex: number } | null {
+function loadProgress(docId: string): { chapterIndex: number; charOffset?: number } | null {
   if (typeof window === 'undefined') return null;
   try { return JSON.parse(localStorage.getItem(PROGRESS_KEY(docId)) || 'null'); } catch { return null; }
+}
+
+// Strip filename prefix from chapter title: "file.pdf — Teil 1" → "Teil 1"
+function cleanTitle(title: string): string {
+  const sep = title.lastIndexOf(' — ');
+  if (sep > 0) return title.substring(sep + 3).trim();
+  // Also handle " - " separator
+  const sep2 = title.lastIndexOf(' - ');
+  if (sep2 > 0 && sep2 > title.length / 2) return title.substring(sep2 + 3).trim();
+  return title;
 }
 
 type ViewMode = 'pdf' | 'text';
@@ -38,7 +48,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [highlightChar, setHighlightChar] = useState(-1);
   const [bionicReading, setBionicReading] = useState(false);
   const [speed, setSpeed] = useState(1.0);
-  const [resumePrompt, setResumePrompt] = useState<{ chapterIndex: number } | null>(null);
+  const [resumePrompt, setResumePrompt] = useState<{ chapterIndex: number; charOffset?: number } | null>(null);
   // TTS seek-to-char: { char, seq } so same position can be re-triggered
   const [ttsSeekTarget, setTtsSeekTarget] = useState<{ char: number; seq: number } | null>(null);
   const seekSeqRef = useRef(0);
@@ -58,8 +68,8 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     setBionicReading(bionic);
 
     const saved = loadProgress(params.id);
-    if (saved && saved.chapterIndex > 0 && saved.chapterIndex < chs.length) {
-      setResumePrompt({ chapterIndex: saved.chapterIndex });
+    if (saved && (saved.chapterIndex > 0 || (saved.charOffset && saved.charOffset > 0)) && saved.chapterIndex < chs.length) {
+      setResumePrompt({ chapterIndex: saved.chapterIndex, charOffset: saved.charOffset ?? 0 });
     }
 
     // PDF aus IndexedDB laden
@@ -79,9 +89,15 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
     saveProgress(params.id, index);
   }, [params.id]);
 
+  const lastSavedCharRef = useRef(0);
   const handleBoundary = useCallback((charIndex: number) => {
     setHighlightChar(charIndex);
-  }, []);
+    // Auto-save position every ~50 chars (throttle)
+    if (Math.abs(charIndex - lastSavedCharRef.current) > 50) {
+      lastSavedCharRef.current = charIndex;
+      saveProgress(params.id, currentIndex, charIndex);
+    }
+  }, [params.id, currentIndex]);
 
   const handleSpeedChange = useCallback((s: number) => {
     setSpeed(s);
@@ -223,7 +239,13 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                   📌 Zuletzt Kap. {resumePrompt.chapterIndex + 1}
                 </p>
                 <button
-                  onClick={() => { goToChapter(resumePrompt.chapterIndex); setResumePrompt(null); }}
+                  onClick={() => {
+                    goToChapter(resumePrompt.chapterIndex);
+                    if (resumePrompt.charOffset && resumePrompt.charOffset > 0) {
+                      requestAnimationFrame(() => setHighlightChar(resumePrompt.charOffset!));
+                    }
+                    setResumePrompt(null);
+                  }}
                   style={{ padding: '4px 10px', background: 'var(--navy)', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
                 >Weiterlesen →</button>
               </div>
@@ -286,7 +308,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                         {isDone ? '✓' : i + 1}
                       </span>
                       <span style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>
-                        {ch.title}
+                        {cleanTitle(ch.title)}
                       </span>
                     </button>
                   );
