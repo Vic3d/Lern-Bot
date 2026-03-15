@@ -241,8 +241,14 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                 <button
                   onClick={() => {
                     goToChapter(resumePrompt.chapterIndex);
-                    if (resumePrompt.charOffset && resumePrompt.charOffset > 0) {
-                      requestAnimationFrame(() => setHighlightChar(resumePrompt.charOffset!));
+                    const offset = resumePrompt.charOffset ?? 0;
+                    if (offset > 0) {
+                      // Scroll PDF to position + seek TTS
+                      requestAnimationFrame(() => {
+                        setHighlightChar(offset);
+                        seekSeqRef.current += 1;
+                        setTtsSeekTarget({ char: offset, seq: seekSeqRef.current });
+                      });
                     }
                     setResumePrompt(null);
                   }}
@@ -276,40 +282,65 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
               </div>
 
               {/* Chapter list */}
-              <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
+              <div style={{ maxHeight: '320px', overflowY: 'auto' }}>
                 {chapters.map((ch, i) => {
                   const isActive = i === currentIndex;
                   const isDone = i < currentIndex;
+                  const mins = Math.ceil((ch.duration_seconds || 60) / 60);
+                  const title = cleanTitle(ch.title);
                   return (
                     <button
                       key={ch.id}
                       onClick={() => goToChapter(i)}
                       style={{
                         width: '100%', textAlign: 'left',
-                        padding: '10px 14px',
-                        background: isActive ? 'var(--navy)' : 'transparent',
-                        color: isActive ? 'white' : isDone ? 'var(--text-muted)' : 'var(--text)',
+                        padding: '9px 12px',
+                        background: isActive ? 'var(--navy)' : isDone ? '#f8fafc' : 'transparent',
+                        color: isActive ? 'white' : 'var(--text)',
                         border: 'none',
                         borderBottom: '1px solid var(--border)',
                         cursor: 'pointer',
-                        display: 'flex', alignItems: 'center', gap: '10px',
-                        transition: 'background 0.15s',
+                        display: 'flex', alignItems: 'center', gap: '9px',
+                        transition: 'background 0.12s',
                       }}
                     >
-                      {/* Number badge */}
+                      {/* Badge */}
                       <span style={{
-                        flexShrink: 0,
-                        width: '22px', height: '22px', borderRadius: '50%',
+                        flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '10px', fontWeight: 700,
-                        background: isActive ? 'rgba(255,255,255,0.2)' : isDone ? '#d1fae5' : 'var(--off-white)',
-                        color: isActive ? 'white' : isDone ? '#059669' : 'var(--text-muted)',
+                        fontSize: '9px', fontWeight: 700,
+                        background: isActive ? 'rgba(255,255,255,0.25)'
+                          : isDone ? '#dcfce7' : 'var(--off-white)',
+                        color: isActive ? 'white' : isDone ? '#16a34a' : 'var(--text-muted)',
                       }}>
                         {isDone ? '✓' : i + 1}
                       </span>
-                      <span style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>
-                        {cleanTitle(ch.title)}
+
+                      {/* Title + meta */}
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{
+                          display: 'block', fontSize: '12px',
+                          fontWeight: isActive ? 700 : isDone ? 400 : 500,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          opacity: isDone && !isActive ? 0.6 : 1,
+                        }}>
+                          {title}
+                        </span>
+                        <span style={{
+                          fontSize: '10px',
+                          color: isActive ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)',
+                        }}>
+                          ~{mins} Min · {(ch.word_count || 0).toLocaleString('de')} Wörter
+                        </span>
                       </span>
+
+                      {/* Active indicator dot */}
+                      {isActive && (
+                        <span style={{
+                          flexShrink: 0, width: '6px', height: '6px',
+                          borderRadius: '50%', background: 'var(--gold)',
+                        }} />
+                      )}
                     </button>
                   );
                 })}
