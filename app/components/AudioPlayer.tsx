@@ -27,7 +27,6 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
   const [duration, setDuration] = useState(0);
   const [ttsPaused, setTtsPaused] = useState(false);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const suppressEndRef = useRef(false); // verhindert dass cancel() → onEnded() feuert
   const ttsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ttsProgressRef = useRef(0);
   const ttsGenRef = useRef(0); // Increment on every stop — prevents stale onend from advancing chapter
@@ -91,12 +90,10 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
   }, [speed]);
 
   function stopTTS() {
-    suppressEndRef.current = true; // cancel() soll kein onEnded triggern
+    ttsGenRef.current++; // Invalidiert alle laufenden onend/onboundary Callbacks
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
     if (ttsIntervalRef.current) { clearInterval(ttsIntervalRef.current); ttsIntervalRef.current = null; }
     utteranceRef.current = null;
-    // suppressEnd nach kurzer Verzögerung zurücksetzen (onend feuert asynchron)
-    setTimeout(() => { suppressEndRef.current = false; }, 100);
   }
 
   function startTTS(resumeFrom = 0) {
@@ -116,19 +113,22 @@ export default function AudioPlayer({ chapter, documentId, onBoundary, onEnded, 
     const germanVoice = voices.find(v => v.lang.startsWith('de')) || null;
     if (germanVoice) utterance.voice = germanVoice;
     utteranceRef.current = utterance;
-    utterance.onboundary = (event) => { onBoundary?.(startChar + event.charIndex); };
+    const myGen = ttsGenRef.current;
+    utterance.onboundary = (event) => {
+      if (ttsGenRef.current !== myGen) return;
+      onBoundary?.(startChar + event.charIndex);
+    };
     utterance.onend = () => {
-      if (suppressEndRef.current) {
-        // cancel() wurde aufgerufen (Seek/Stop) — kein Chapter-Advance
-        suppressEndRef.current = false;
-        return;
-      }
+      if (ttsGenRef.current !== myGen) return; // Stale: cancel/seek ausgelöst, kein Chapter-Advance
       setIsPlaying(false); setTtsPaused(false);
       ttsProgressRef.current = dur; setCurrentTime(dur);
       if (ttsIntervalRef.current) clearInterval(ttsIntervalRef.current);
       onEnded?.();
     };
-    utterance.onerror = (e) => { if (e.error !== 'interrupted') { console.error('TTS:', e.error); setIsPlaying(false); } };
+    utterance.onerror = (e) => {
+      if (ttsGenRef.current !== myGen) return;
+      if (e.error !== 'interrupted') { console.error('TTS:', e.error); setIsPlaying(false); }
+    };
     window.speechSynthesis.speak(utterance);
     ttsResumeFromRef.current = resumeFrom;
     ttsStartTimeRef.current = Date.now();

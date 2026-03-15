@@ -1,170 +1,268 @@
 #!/usr/bin/env python3
 """
 PDF Text Extraction via pdfplumber
-Usage: python3 scripts/extract_pdf.py <pdf_path>
-Output: JSON mit chapters + start_page/end_page pro Kapitel
+Strategie 1: TOC-basiert (erkennt Inhaltsverzeichnis → echte Titel + Seiten)
+Strategie 2: Heading-Pattern mit 4x-Decode (AKAD-spezifisch)
+Strategie 3: Wort-Chunk-Fallback
 """
-import sys
-import json
-import re
+import sys, json, re
 import pdfplumber
 
 
-def clean_line(line: str) -> str:
-    return line.strip()
+# ── Hilfsfunktionen ─────────────────────────────────────────────────────────────
 
-
-def is_noise(line: str) -> bool:
+def is_noise(line):
     l = line.strip()
-    if not l:
-        return True
-    if re.match(r'^-?\s*\d+\s*-?$', l):
-        return True
-    if re.match(r'^(Seite|Page)\s+\d+', l, re.IGNORECASE):
-        return True
-    if len(l) < 2:
-        return True
+    if not l or len(l) < 2: return True
+    if re.match(r'^-?\s*\d{1,3}\s*-?$', l): return True
+    if re.match(r'^(Seite|Page)\s+\d+', l, re.IGNORECASE): return True
     return False
 
 
-def clean_chapter_title(title: str) -> str:
-    return re.sub(r'\s+\d+\s*$', '', title.strip())
+def clean_title(t):
+    t = re.sub(r'\s+\d+\s*$', '', t.strip())
+    return re.sub(r'\s+', ' ', t).strip()
 
 
-heading_pattern = re.compile(
-    r'^('
-    r'\d+\.\d+(?:\.\d+)*\s+[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß /\-—\(\)]{2,100}'  # 1.1 Titel
-    r'|\d+\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß /\-—\(\)]{3,100}'  # 1 Titel
-    r'|Kapitel\s+\d+[A-Za-zÄÖÜäöüß /\-—]{0,80}'  # Kapitel 1 Xxx
-    r'|Einleitung(?:\s*/\s*Lernziele)?'
-    r'|Einleitung\s*und\s*Lernziele'
-    r'|Zusammenfassung'
-    r'|Lernziele'
-    r'|Lösung|Aufgaben'
-    r')$'
+def decode_4x(text):
+    """SSSSttttaaaattttiiiikkkk → Statik"""
+    if not text: return text
+    result, i = [], 0
+    while i < len(text):
+        c, count = text[i], 1
+        while i + count < len(text) and text[i + count] == c:
+            count += 1
+        result.append(c if count >= 4 else c * count)
+        i += count
+    return ''.join(result)
+
+
+def maybe_decode(line):
+    if re.search(r'(.)\1{3}', line):
+        return decode_4x(line)
+    return line
+
+
+# ── Strategie 1: TOC-Erkennung ──────────────────────────────────────────────────
+# TOC-Zeile: "(Nummer) Titel Seitenzahl"  z.B. "1.1 Tragelemente ebener Systeme 5"
+
+TOC_RE = re.compile(r'^(?:(\d+(?:\.\d+)*)\s+)?(.+?)\s+(\d{1,3})\s*$')
+
+
+def parse_toc_line(line):
+    m = TOC_RE.match(line.strip())
+    if not m: return None
+    number, title, page = m.group(1) or '', m.group(2).strip(), int(m.group(3))
+    if len(title) < 3 or not re.search(r'[A-Za-zÄÖÜäöüß]', title): return None
+    # Titel darf nicht selbst eine Zahl sein
+    if re.match(r'^\d+$', title): return None
+    return (number, title, page)
+
+
+def detect_toc(pdf):
+    """Sucht TOC in ersten 5 Seiten. Gibt [(number, title, page), ...] zurück."""
+    for page in pdf.pages[:5]:
+        text = page.extract_text() or ''
+        raw_lines = [l.strip() for l in text.split('\n') if l.strip()]
+
+        # Mehrzeilige TOC-Einträge zusammenführen
+        joined = []
+        for line in raw_lines:
+            # Fortsetzung: keine führende Zahl, keine Schlüsselwörter, vorherige endet nicht auf Zahl
+            if (joined
+                    and not re.match(r'^\d', line)
+                    and not re.match(r'^(Einleitung|Zusammenfassung|Lernziele)', line)
+                    and not re.search(r'\d+\s*$', joined[-1])):
+                joined[-1] += ' ' + line
+            else:
+                joined.append(line)
+
+        entries = [e for e in (parse_toc_line(l) for l in joined) if e]
+
+        if len(entries) >= 4:
+            pages = [e[2] for e in entries]
+            # Seitenzahlen müssen nicht-absteigend sein
+            if all(pages[i] <= pages[i+1] for i in range(len(pages)-1)):
+                return entries
+    return []
+
+
+def build_chapters_from_toc(pdf, toc, num_pages):
+    """Nutzt TOC-Seitengrenzen um Kapitel zu extrahieren."""
+    # Nur Top-Level (Tiefe 0 oder 1: "1", "1.1", "Einleitung")
+    top = [(n, t, p) for n, t, p in toc if n.count('.') <= 1]
+    if not top:
+        top = toc[:20]
+
+    chapters = []
+    for i, (number, title, start_p) in enumerate(top):
+        end_p = top[i+1][2] - 1 if i+1 < len(top) else num_pages
+        end_p = max(end_p, start_p)
+
+        body_lines = []
+        for p_idx in range(start_p - 1, min(end_p, num_pages)):
+            t = pdf.pages[p_idx].extract_text() or ''
+            for line in t.split('\n'):
+                if not is_noise(line) and line.strip():
+                    body_lines.append(line.strip())
+
+        body = '\n'.join(body_lines).strip()
+        wc = len(body.split())
+        full_title = (f"{number} {title}".strip() if number else title)
+
+        chapters.append({
+            'chapter_num': i + 1,
+            'title': clean_title(full_title),
+            'text': body,
+            'word_count': wc,
+            'duration_seconds': round(max(wc, 1) / 2.5),
+            'start_page': start_p,
+            'end_page': end_p,
+        })
+
+    # Mini-Kapitel (< 150 Wörter) mit nächstem zusammenführen
+    merged = []
+    for ch in chapters:
+        if merged and merged[-1]['word_count'] < 150:
+            prev = merged[-1]
+            prev['text'] += '\n' + ch['text']
+            prev['word_count'] += ch['word_count']
+            prev['duration_seconds'] = round(prev['word_count'] / 2.5)
+            prev['end_page'] = ch['end_page']
+        else:
+            merged.append(ch)
+    for i, ch in enumerate(merged):
+        ch['chapter_num'] = i + 1
+
+    return [ch for ch in merged if ch['word_count'] > 30]
+
+
+# ── Strategie 2: Heading-Pattern (mit 4x-Decode) ────────────────────────────────
+
+HEADING_RE = re.compile(
+    r'^(\d+\.?\d*\.?\d*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,/\-]{2,80}'
+    r'|Einleitung(?:\s*/\s*Lernziele)?|Einleitung\s*und\s*Lernziele'
+    r'|Zusammenfassung|Lernziele)$'
 )
 
 
-def extract_text(pdf_path: str):
-    """
-    Gibt (page_lines, num_pages) zurück.
-    page_lines = [(page_num, line_text), ...] — jede Zeile mit ihrer Seitennummer
-    """
-    page_lines = []
-    num_pages = 0
-    with pdfplumber.open(pdf_path) as pdf:
-        num_pages = len(pdf.pages)
-        for page_num, page in enumerate(pdf.pages, 1):
-            t = page.extract_text()
-            if t:
-                for line in t.split('\n'):
-                    page_lines.append((page_num, line))
-    return page_lines, num_pages
+def build_chapters_from_headings(pdf, num_pages):
+    chapters, current_title, current_items, chapter_num = [], 'Einleitung', [], 0
 
+    for p_idx in range(num_pages):
+        page_text = pdf.pages[p_idx].extract_text() or ''
+        for raw_line in page_text.split('\n'):
+            if is_noise(raw_line): continue
+            line = maybe_decode(raw_line.strip())
+            if not line: continue
+            page_num = p_idx + 1
 
-def split_chapters(page_lines, filename, num_pages):
-    """
-    Spaltet Text in Kapitel auf.
-    Speichert start_page und end_page pro Kapitel.
-    """
-    chapters = []
-    current_title = "Einleitung"
-    current_items = []   # [(page_num, cleaned_line)]
-    chapter_num = 0
+            body_so_far = ' '.join(t for _, t in current_items)
+            if HEADING_RE.match(clean_title(line)) and len(body_so_far) > 300:
+                if current_items:
+                    chapter_num += 1
+                    pages = [p for p, _ in current_items]
+                    body = '\n'.join(t for _, t in current_items).strip()
+                    wc = len(body.split())
+                    chapters.append({
+                        'chapter_num': chapter_num,
+                        'title': clean_title(current_title),
+                        'text': body,
+                        'word_count': wc,
+                        'duration_seconds': round(wc / 2.5),
+                        'start_page': min(pages),
+                        'end_page': max(pages),
+                    })
+                current_title = clean_title(line)
+                current_items = []
+            else:
+                current_items.append((page_num, line))
 
-    for page_num, raw_line in page_lines:
-        if is_noise(raw_line):
-            continue
-        line = clean_line(raw_line)
-        if not line:
-            continue
-
-        if heading_pattern.match(line) and len(" ".join(l for _, l in current_items)) > 300:
-            if current_items:
-                chapter_num += 1
-                pages = [p for p, _ in current_items]
-                body = "\n".join(l for _, l in current_items).strip()
-                word_count = len(body.split())
-                chapters.append({
-                    "chapter_num": chapter_num,
-                    "title": clean_chapter_title(current_title),
-                    "text": body,
-                    "word_count": word_count,
-                    "duration_seconds": round(word_count / 2.5),
-                    "start_page": min(pages),
-                    "end_page": max(pages),
-                })
-            current_title = line
-            current_items = []
-        else:
-            current_items.append((page_num, line))
-
-    # Letztes Kapitel
     if current_items:
         chapter_num += 1
         pages = [p for p, _ in current_items]
-        body = "\n".join(l for _, l in current_items).strip()
-        word_count = len(body.split())
+        body = '\n'.join(t for _, t in current_items).strip()
+        wc = len(body.split())
         chapters.append({
-            "chapter_num": chapter_num,
-            "title": clean_chapter_title(current_title),
-            "text": body,
-            "word_count": word_count,
-            "duration_seconds": round(word_count / 2.5),
-            "start_page": min(pages) if pages else 1,
-            "end_page": max(pages) if pages else num_pages,
+            'chapter_num': chapter_num,
+            'title': clean_title(current_title),
+            'text': body,
+            'word_count': wc,
+            'duration_seconds': round(wc / 2.5),
+            'start_page': min(pages) if pages else 1,
+            'end_page': max(pages) if pages else num_pages,
         })
-
-    # Fallback: kein Kapitel erkannt → nach Wortanzahl splitten
-    if len(chapters) <= 1 and sum(len(l.split()) for _, l in page_lines) > 1000:
-        all_items = [(p, l) for p, l in page_lines if not is_noise(l) and clean_line(l)]
-        all_words = []
-        word_pages = []
-        for p, l in all_items:
-            ws = l.split()
-            all_words.extend(ws)
-            word_pages.extend([p] * len(ws))
-
-        chunk_size = 1500
-        chapters = []
-        for i in range(0, len(all_words), chunk_size):
-            chunk_words = all_words[i:i + chunk_size]
-            chunk_pages = word_pages[i:i + chunk_size]
-            num = i // chunk_size + 1
-            chapters.append({
-                "chapter_num": num,
-                "title": f"Kapitel {num}",
-                "text": " ".join(chunk_words),
-                "word_count": len(chunk_words),
-                "duration_seconds": round(len(chunk_words) / 2.5),
-                "start_page": chunk_pages[0] if chunk_pages else 1,
-                "end_page": chunk_pages[-1] if chunk_pages else num_pages,
-            })
 
     return chapters
 
 
-if __name__ == "__main__":
+# ── Strategie 3: Wort-Chunks ─────────────────────────────────────────────────────
+
+def build_chapters_from_words(pdf, num_pages, chunk_size=1500):
+    all_words, word_pages = [], []
+    for p_idx in range(num_pages):
+        t = pdf.pages[p_idx].extract_text() or ''
+        for line in t.split('\n'):
+            if not is_noise(line):
+                ws = line.strip().split()
+                all_words.extend(ws)
+                word_pages.extend([p_idx + 1] * len(ws))
+
+    chapters = []
+    for i in range(0, len(all_words), chunk_size):
+        cw = all_words[i:i+chunk_size]
+        cp = word_pages[i:i+chunk_size]
+        num = i // chunk_size + 1
+        chapters.append({
+            'chapter_num': num,
+            'title': f'Teil {num}',
+            'text': ' '.join(cw),
+            'word_count': len(cw),
+            'duration_seconds': round(len(cw) / 2.5),
+            'start_page': cp[0] if cp else 1,
+            'end_page': cp[-1] if cp else num_pages,
+        })
+    return chapters
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────────
+
+if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: extract_pdf.py <pdf_path>"}))
+        print(json.dumps({'error': 'Usage: extract_pdf.py <pdf_path>'}))
         sys.exit(1)
 
     pdf_path = sys.argv[1]
-    filename = pdf_path.split("/")[-1]
+    strategy = 'unknown'
 
     try:
-        page_lines, num_pages = extract_text(pdf_path)
-        full_text = "\n".join(l for _, l in page_lines if not is_noise(l))
-        chapters = split_chapters(page_lines, filename, num_pages)
+        with pdfplumber.open(pdf_path) as pdf:
+            num_pages = len(pdf.pages)
 
-        result = {
-            "success": True,
-            "pages": num_pages,
-            "total_chars": len(full_text),
-            "chapters_count": len(chapters),
-            "chapters": chapters
-        }
-        print(json.dumps(result, ensure_ascii=False))
+            toc = detect_toc(pdf)
+            if toc:
+                chapters = build_chapters_from_toc(pdf, toc, num_pages)
+                strategy = 'toc'
+
+            if not toc or len(chapters) <= 1:
+                chapters = build_chapters_from_headings(pdf, num_pages)
+                strategy = 'headings'
+
+            if len(chapters) <= 1:
+                chapters = build_chapters_from_words(pdf, num_pages)
+                strategy = 'word_chunks'
+
+            result = {
+                'success': True,
+                'pages': num_pages,
+                'total_chars': sum(ch['word_count'] * 5 for ch in chapters),
+                'chapters_count': len(chapters),
+                'strategy': strategy,
+                'chapters': chapters,
+            }
+            print(json.dumps(result, ensure_ascii=False))
+
     except Exception as e:
-        print(json.dumps({"success": False, "error": str(e)}))
+        import traceback
+        print(json.dumps({'success': False, 'error': str(e), 'trace': traceback.format_exc()}))
         sys.exit(1)
