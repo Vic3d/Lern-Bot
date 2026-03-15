@@ -1,8 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // pdfjs-dist nicht durch Next.js bundlen — braucht Zugriff auf Worker-Datei vom Disk
-  serverExternalPackages: ['pdfjs-dist', 'canvas'],
+  // Next.js 14: experimental.serverComponentsExternalPackages
+  // Next.js 15: serverExternalPackages
+  // pdfjs-dist NICHT durch webpack bundlen — Worker-Pfad muss auf echte Datei zeigen
+  experimental: {
+    serverComponentsExternalPackages: ['pdfjs-dist', 'canvas'],
+  },
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.alias = {

@@ -1,15 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createRequire } from 'module';
+import { getDocumentProxy } from 'unpdf';
 
-// PDF.js direkt — gibt uns Position + strukturelle Wiederholungs-Erkennung
-// unpdf wird nicht mehr verwendet (concateniert Items ohne Positionsdaten)
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
-
-// Worker-Pfad: createRequire + require.resolve ist robust auf Vercel Serverless
-// (process.cwd() zeigt dort ggf. woanders hin)
-const _require = createRequire(import.meta.url);
-const workerPath = _require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs');
-GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
+// unpdf übernimmt Worker-Setup für Node.js/Vercel — kein manueller Worker-Pfad nötig
+// getDocumentProxy gibt uns die rohe PDF.js document proxy mit vollen Positions-Daten
 
 function generateId() {
   return Math.random().toString(36).substring(2, 15);
@@ -17,46 +10,52 @@ function generateId() {
 
 interface LineItem {
   y: number;
-  text: string;       // zusammengefügter Text aller Items in dieser Zeile
-  deduped: string;    // dedupliziert wenn Encoding erkannt
-  isEncoded: boolean; // true = N≥2 gleiche Items = AKAD-Encoding
+  text: string;
+  deduped: string;
+  isEncoded: boolean; // true = Item war N≥2 mal an gleicher Position = AKAD-Encoding
+}
+
+/** Zählt wie oft item.str an gleicher Position (±4pt) im Array vorkommt */
+function countDuplicates(item: any, items: any[]): number {
+  const str = item.str.trim();
+  const x = item.transform[4];
+  const y = item.transform[5];
+  return items.filter(
+    (k) => k.str.trim() === str && Math.abs(k.transform[4] - x) <= 4 && Math.abs(k.transform[5] - y) <= 4
+  ).length;
 }
 
 /**
- * Extrahiert Text aus PDF mit positionsbasierter Header/Footer-Erkennung.
- * Nutzt PDF.js direkt statt unpdf → Zugriff auf x/y/fontHeight pro Item.
- * AKAD-Encoding (4x wiederholte Items) wird strukturell erkannt, nicht per Regex.
+ * Bounding-Box-Deduplication: entfernt Items an gleicher Position mit gleichem Text.
+ * Gibt {item, count} zurück — count = wie oft das Item im Original vorkam.
+ * So bleibt isEncoded auch NACH Dedup korrekt (count≥2 = encoded).
  */
-/**
- * Bounding-Box-Deduplication: entfernt redundante Text-Items die an (nahezu) gleicher
- * Position gedruckt wurden (z.B. AKAD 4x-Encoding, Bold-Pseudo-Effekte).
- * Logik: Item A ist Duplikat von B wenn:
- *   - gleicher Text (nach trim)  UND
- *   - Mittelpunkte liegen ≤ 4pt auseinander (Overlap ohne width/height zu brauchen)
- * Behält immer das ERSTE Vorkommen.
- */
-function deduplicateItems(items: any[]): any[] {
-  const kept: any[] = [];
+function deduplicateItems(items: any[]): Array<{ item: any; count: number }> {
+  const kept: Array<{ item: any; count: number }> = [];
   for (const item of items) {
     const str = item.str.trim();
     const x = item.transform[4];
     const y = item.transform[5];
-    const isDuplicate = kept.some((k) => {
-      if (k.str.trim() !== str) return false;
-      return Math.abs(k.transform[4] - x) <= 4 && Math.abs(k.transform[5] - y) <= 4;
-    });
-    if (!isDuplicate) kept.push(item);
+    const isDuplicate = kept.some(
+      (k) =>
+        k.item.str.trim() === str &&
+        Math.abs(k.item.transform[4] - x) <= 4 &&
+        Math.abs(k.item.transform[5] - y) <= 4
+    );
+    if (!isDuplicate) {
+      kept.push({ item, count: countDuplicates(item, items) });
+    }
   }
   return kept;
 }
 
+/**
+ * Extrahiert Text aus PDF via unpdf (Worker-kompatibel auf Vercel).
+ * Nutzt getDocumentProxy → getTextContent() für volle Positions-Daten.
+ * Header/Footer werden per y-Position gefiltert, AKAD-Encoding per Bounding-Box-Dedup erkannt.
+ */
 async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
-  const doc = await getDocument({
-    data: buffer,
-    useWorkerFetch: false,
-    isEvalSupported: false,
-  }).promise;
-
+  const doc = await getDocumentProxy(buffer);
   const allLines: LineItem[] = [];
 
   for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
@@ -66,50 +65,48 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
 
     const textContent = await page.getTextContent();
 
-    // Header-Zone (oben): y > 92% der Seitenhöhe  →  Seitenzahl
-    // Footer-Zone (unten): y < 8% der Seitenhöhe  →  "Kapitel N", "å TME102"
+    // Header-Zone: y > 92% → Seitenzahlen oben
+    // Footer-Zone: y < 8%  → "Kapitel N", "å TME102" unten
     const HEADER_Y = pageHeight * 0.92;
     const FOOTER_Y = pageHeight * 0.08;
 
-    // Schritt 1: Items auf Inhaltsbereich reduzieren
-    // WICHTIG: deduplicateItems wird NICHT hier angewandt — die isEncoded-Erkennung
-    // in Schritt 3 braucht die N>=2 identischen Items um Überschriften zu erkennen.
-    // sanitizeText() am Ende fängt verbleibende Duplikate im Body-Text auf.
-    const contentItems = (textContent.items as any[]).filter(
+    // Schritt 1: Inhaltszone + Bounding-Box-Deduplication
+    // count≥2 = AKAD-Encoding (gleicher Text N-fach an gleicher Position)
+    const rawItems = (textContent.items as any[]).filter(
       (item) => item.str?.trim() && item.transform[5] > FOOTER_Y && item.transform[5] < HEADER_Y
     );
+    const dedupedItems = deduplicateItems(rawItems);
 
     // Schritt 2: Items nach y-Position gruppieren (±3pt = gleiche Zeile)
-    const yMap = new Map<number, any[]>();
-    for (const item of contentItems) {
-      const y = Math.round(item.transform[5]);
+    const yMap = new Map<number, Array<{ item: any; count: number }>>();
+    for (const entry of dedupedItems) {
+      const y = Math.round(entry.item.transform[5]);
       let matched = false;
       for (const [gy] of yMap) {
         if (Math.abs(gy - y) <= 3) {
-          yMap.get(gy)!.push(item);
+          yMap.get(gy)!.push(entry);
           matched = true;
           break;
         }
       }
-      if (!matched) yMap.set(y, [item]);
+      if (!matched) yMap.set(y, [entry]);
     }
 
-    // Schritt 3: Zeilen sortieren (y absteigend = oben nach unten)
+    // Schritt 3: Zeilen sortieren und Text zusammensetzen
     const sortedLines = [...yMap.entries()]
       .sort((a, b) => b[0] - a[0])
-      .map(([y, items]) => {
-        // Items innerhalb der Zeile nach x sortieren
-        items.sort((a: any, b: any) => a.transform[4] - b.transform[4]);
+      .map(([y, entries]) => {
+        entries.sort((a, b) => a.item.transform[4] - b.item.transform[4]);
+
         // Leerzeichen zwischen Items einfügen wenn nötig (verhindert "Tragwerkebestehen")
         let text = '';
-        for (let k = 0; k < items.length; k++) {
-          const s = items[k].str;
+        for (let k = 0; k < entries.length; k++) {
+          const s = entries[k].item.str;
           if (k === 0) { text = s; continue; }
-          const prev = text;
-          // Space einfügen wenn letztes Zeichen kein Space und nächstes auch nicht
-          if (prev.length && !prev.endsWith(' ') && s.length && !s.startsWith(' ')) {
-            // Nur wenn x-Abstand > 1pt (echte Lücke, kein Overlap)
-            const xGap = items[k].transform[4] - (items[k - 1].transform[4] + (items[k - 1].width || 0));
+          if (text.length && !text.endsWith(' ') && s.length && !s.startsWith(' ')) {
+            const xGap =
+              entries[k].item.transform[4] -
+              (entries[k - 1].item.transform[4] + (entries[k - 1].item.width || 0));
             text += (xGap > 1 ? ' ' : '') + s;
           } else {
             text += s;
@@ -117,12 +114,13 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
         }
         text = text.trim();
 
-        // AKAD-Encoding-Erkennung: N≥2 identische Items
+        // isEncoded: maxCount≥2 bedeutet dieser Text war N-fach im Original (AKAD-Encoding)
+        const maxCount = Math.max(...entries.map((e) => e.count));
         let isEncoded = false;
         let deduped = text;
-        if (items.length >= 2) {
-          const firstStr = items[0].str.trim();
-          if (firstStr && items.every((i: any) => i.str.trim() === firstStr)) {
+        if (maxCount >= 2) {
+          const firstStr = entries[0].item.str.trim();
+          if (firstStr && entries.every((e) => e.item.str.trim() === firstStr)) {
             isEncoded = true;
             deduped = firstStr;
           }
@@ -138,29 +136,21 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
 }
 
 /**
- * Sicherheitsnetz: Bereinigt doppelt vorkommenden Text aus dem extrahierten Inhalt.
- * Wird NACH der Extraktion auf jedes cleaned_text angewendet.
- *
- * Behandelt zwei Fälle:
- * 1. Inline-Wiederholungen: "TitelTitelTitelTitel" → "Titel"  (AKAD 4x-Encoding)
- * 2. Zeilen-Wiederholungen: gleiche Zeile N≥2 mal hintereinander → 1x behalten
- *
- * Andere Screen-Reader (Speechify, Natural Reader) machen exakt das als Post-Processing.
+ * Sicherheitsnetz: Bereinigt doppelt vorkommenden Text.
+ * Schicht 3 nach Bounding-Box-Dedup (Schicht 1) und isEncoded-Erkennung (Schicht 2).
  */
 function sanitizeText(text: string): string {
   if (!text) return text;
 
-  // Schritt 1: Inline-Wiederholungen (z.B. "WortWortWortWort" → "Wort")
-  // Findet Phrasen die 2–6x direkt hintereinander vorkommen
+  // Inline-Wiederholungen: "WortWortWortWort" → "Wort"
   let cleaned = text.replace(/(.{4,}?)\1{2,}/g, '$1');
 
-  // Schritt 2: Zeilen-Wiederholungen (gleiche Zeile hintereinander)
+  // Zeilen-Wiederholungen: gleiche Zeile hintereinander
   const lines = cleaned.split('\n');
   const deduped: string[] = [];
   for (const line of lines) {
     const t = line.trim();
-    // Überspringe wenn die letzten 1-3 Zeilen identisch sind (Schwelle: ≥2 gleich = streichen)
-    const recent = deduped.slice(-3).map(l => l.trim());
+    const recent = deduped.slice(-3).map((l) => l.trim());
     if (!t || !recent.includes(t)) {
       deduped.push(line);
     }
@@ -178,13 +168,12 @@ function buildChapters(lines: LineItem[], filename: string) {
   let pendingNumber: string | null = null;
   let pendingNumberY: number | null = null;
 
-  // Überschrift-Pattern: "1 Titel", "1.2 Titel", oder bekannte Sektionsnamen
-  const chapterHeadingRe = /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-()]{2,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Stichwortverzeichnis|Antworten zu den Kontrollfragen)$/;
+  const chapterHeadingRe =
+    /^(\d+(?:\.\d+)*\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß ,\/\-(]{3,80}|Einleitung(?:\s*(?:und|\/)\s*Lernziele)?|Zusammenfassung|Lernziele|Vorwort|Literaturverzeichnis|Antworten zu den Kontrollfragen)$/;
 
   const flush = () => {
     if (currentLines.length === 0) return;
     chapterNum++;
-    // sanitizeText als Sicherheitsnetz: fängt doppelten Text auch wenn PDF.js-Erkennung nicht greift
     const body = sanitizeText(currentLines.join('\n'));
     const wordCount = body.split(/\s+/).filter(Boolean).length;
     chapters.push({
@@ -206,25 +195,19 @@ function buildChapters(lines: LineItem[], filename: string) {
     const trimmed = text.trim();
     if (!trimmed) continue;
 
-    // Kapitel-/Abschnittsnummer aus encoded Line (z.B. "1", "1.2", "1.4.3")
-    // WICHTIG: Nummern können einstellig sein ("1"), nicht filtern!
+    // Kapitel-/Abschnittsnummer VOR length-Filter ("1" hat length=1)
     if (line.isEncoded && /^\d+(?:\.\d+)*$/.test(trimmed)) {
       pendingNumber = trimmed;
       pendingNumberY = line.y;
       continue;
     }
-
-    // Erst nach Nummer-Check für Längenfil filter apply
     if (trimmed.length < 2) continue;
 
     let isHeading = false;
     let headingTitle = trimmed;
 
-    // Encoded Nummer + encoded Titel = Überschrift
     if (pendingNumber !== null && pendingNumberY !== null) {
       const combined = `${pendingNumber} ${trimmed}`;
-      // FIX: y-Abstand muss klein sein (echter Kapitelheader vs. Diagramm-Label weit entfernt)
-      // Echte Kapitel-Überschriften haben Nummer und Titel nah beieinander (≤40pt)
       const yGap = pendingNumberY - line.y;
       if (line.isEncoded && chapterHeadingRe.test(combined) && yGap < 40) {
         headingTitle = combined;
@@ -234,7 +217,6 @@ function buildChapters(lines: LineItem[], filename: string) {
       pendingNumberY = null;
     }
 
-    // Direkte Überschriften-Erkennung für encoded Zeilen (z.B. "Zusammenfassung" 4x)
     if (!isHeading && line.isEncoded && chapterHeadingRe.test(trimmed)) {
       isHeading = true;
     }
@@ -243,17 +225,14 @@ function buildChapters(lines: LineItem[], filename: string) {
       flush();
       currentTitle = headingTitle;
       currentLines = [];
-    } else {
-      // Body-Text: nur wenn sinnvoll lang
-      if (trimmed.length > 2) {
-        currentLines.push(trimmed);
-      }
+    } else if (trimmed.length > 2) {
+      currentLines.push(trimmed);
     }
   }
 
   flush();
 
-  // Fallback: falls nur 1 Kapitel erkannt → nach Wortanzahl splitten
+  // Fallback: wenn keine Kapitel erkannt → nach Wortanzahl splitten
   if (chapters.length <= 1) {
     const words = lines
       .map((l) => (l.isEncoded ? l.deduped : l.text))
@@ -299,7 +278,6 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-    // PDF.js Extraktion mit Positionsdaten
     const lines = await extractPDFLayout(uint8);
     const documentId = generateId();
     const chaptersRaw = buildChapters(lines, file.name);
@@ -310,7 +288,6 @@ export async function POST(request: NextRequest) {
     }));
 
     const totalWords = chapters.reduce((sum, ch) => sum + ch.word_count, 0);
-    const totalPages = Math.ceil(lines.length / 15); // Rough estimate
 
     const document = {
       id: documentId,
@@ -320,10 +297,10 @@ export async function POST(request: NextRequest) {
       last_accessed: new Date().toISOString(),
       created_at: new Date().toISOString(),
       status: 'ready',
-      extraction: `~${totalPages} Seiten, ${totalWords} Wörter, ${chapters.length} Kapitel`,
+      extraction: `${totalWords} Wörter, ${chapters.length} Kapitel`,
     };
 
-    console.log(`[UPLOAD] "${file.name}" → ${chapters.length} Kapitel, ${totalWords} Wörter`);
+    console.log(`[UPLOAD v0.9.5] "${file.name}" → ${chapters.length} Kapitel`);
 
     return NextResponse.json({
       success: true,
