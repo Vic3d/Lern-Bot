@@ -12,7 +12,8 @@ function generateId() {
  */
 function decodeRepeated(line: string): string {
   // Schritt 1: 4x wiederholte Einzelzeichen → 1x (behandelt "1111"→"1", "SSSStttt"→"St")
-  let current = line.trim().replace(/(.){3,}/g, '$1');
+  // WICHTIG: (.)\1{2,} = selbes Zeichen mind. 3x in Folge ("1111"\u2192"1")
+  let current = line.trim().replace(/(.)\1{2,}/g, '$1');
   // Schritt 2: Wort-Level-Repetition → erste Instanz ("TitelTitelTitel"→"Titel")
   for (let iter = 0; iter < 4; iter++) {
     const n = current.length;
