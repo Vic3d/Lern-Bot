@@ -72,14 +72,12 @@ async function extractPDFLayout(buffer: Uint8Array): Promise<LineItem[]> {
     const FOOTER_Y = pageHeight * 0.08;
 
     // Schritt 1: Items auf Inhaltsbereich reduzieren
-    const rawItems = (textContent.items as any[]).filter(
+    // WICHTIG: deduplicateItems wird NICHT hier angewandt — die isEncoded-Erkennung
+    // in Schritt 3 braucht die N>=2 identischen Items um Überschriften zu erkennen.
+    // sanitizeText() am Ende fängt verbleibende Duplikate im Body-Text auf.
+    const contentItems = (textContent.items as any[]).filter(
       (item) => item.str?.trim() && item.transform[5] > FOOTER_Y && item.transform[5] < HEADER_Y
     );
-
-    // Schritt 1b: Bounding-Box-Deduplication (wie PDF.js Text-Layer)
-    // Wenn zwei Items gleichen Text haben UND ihre Bounding Boxes >50% überlappen → Duplikat
-    // Deckt AKAD 4x-Encoding, aber auch andere PDFs die Text mehrfach rendern
-    const contentItems = deduplicateItems(rawItems);
 
     // Schritt 2: Items nach y-Position gruppieren (±3pt = gleiche Zeile)
     const yMap = new Map<number, any[]>();
