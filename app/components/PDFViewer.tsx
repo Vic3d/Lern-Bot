@@ -66,7 +66,8 @@ export default function PDFViewer({
 
   // Highlight tracking
   const highlightedSpanRef = useRef<HTMLSpanElement | null>(null);
-  const lastHlIdxRef = useRef(0); // sticky highlight index within chapter items
+  const lastMatchedItemRef = useRef(0);   // forward-only pointer in chItems
+  const lastHighlightCharRef = useRef(-1); // detects backward seek (user clicked elsewhere)
 
   // Observers
   const lazyObserverRef = useRef<IntersectionObserver | null>(null);
@@ -114,14 +115,15 @@ export default function PDFViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale]);
 
-  // Reset chapter cache + highlight index when chapterText changes
+  // Reset on chapter change
   useEffect(() => {
     chapterStartRef.current = -1;
     chapterTextCacheRef.current = '';
-    lastHlIdxRef.current = 0;
+    lastMatchedItemRef.current = 0;
+    lastHighlightCharRef.current = -1;
   }, [chapterText]);
 
-  // ── Highlight: forward-only word search (no chStart needed, no backward jumps) ──
+  // ── Highlight: bounded chapter items + forward-only word search ──
   useEffect(() => {
     clearHighlight();
     if (highlightCharIndex < 0 || !chapterText || !chapterText.length) return;
@@ -129,48 +131,60 @@ export default function PDFViewer({
     const allItems = textItemsRef.current;
     if (!allItems.length) return;
 
-    // Word at current TTS boundary
+    // Kapitel-Items begrenzen — verhindert Sprünge auf andere Kapitel/Seiten
+    const chStart = getChapterStart();
+    const chEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
+    const chItems = allItems.filter(it =>
+      it.globalStart >= Math.max(0, chStart) && it.globalStart < chEnd
+    );
+    const useItems = chItems.length >= 5 ? chItems : allItems;
+    if (!useItems.length) return;
+
+    // Rückwärts-Seek: User hat zu früherer Stelle gesprungen → Pointer zurücksetzen
+    const prevChar = lastHighlightCharRef.current;
+    if (highlightCharIndex < prevChar - 150) {
+      const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
+      lastMatchedItemRef.current = Math.floor(ratio * useItems.length);
+    }
+    lastHighlightCharRef.current = highlightCharIndex;
+
+    // Aktuell gesprochenes Wort aus cleaned_text extrahieren
     let wStart = highlightCharIndex;
+    while (wStart > 0 && chapterText[wStart - 1] !== ' ') wStart--;
     let wEnd = highlightCharIndex;
-    while (wStart > 0 && !/\s/.test(chapterText[wStart - 1])) wStart--;
-    while (wEnd < chapterText.length && !/\s/.test(chapterText[wEnd])) wEnd++;
+    while (wEnd < chapterText.length && chapterText[wEnd] !== ' ') wEnd++;
     const word = chapterText.slice(wStart, wEnd).toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
 
-    // Progress ratio in chapter (0–1)
-    const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
-    const approxGlobal = Math.floor(ratio * allItems.length);
-
-    // Detect seek: if ratio jumped far from lastHlIdxRef → reset starting point
-    const lastGlobal = lastHlIdxRef.current;
-    const expectedFromLast = lastGlobal + 5; // normal forward progress
-    const isSeeked = Math.abs(approxGlobal - lastGlobal) > 60;
-
-    // Search start: after last found position (forward only), or approxGlobal after seek
-    const searchFrom = isSeeked
-      ? Math.max(0, approxGlobal - 15)
-      : Math.max(lastGlobal, Math.max(0, approxGlobal - 5));
-    const searchEnd = Math.min(allItems.length - 1, searchFrom + 60);
-
+    // Vorwärts-Suche: max 30 Items nach vorne, NIE rückwärts
+    const from = lastMatchedItemRef.current;
+    const to = Math.min(useItems.length - 1, from + 30);
     let foundIdx = -1;
+
     if (word.length >= 3) {
-      for (let j = searchFrom; j <= searchEnd; j++) {
-        const s = (allItems[j].str || '').toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
-        if (s.length >= 2 && (s.includes(word) || word.includes(s))) {
+      for (let j = from; j <= to; j++) {
+        const s = (useItems[j].str || '').toLowerCase().replace(/[^a-zäöüß0-9]/gi, '');
+        if (s.length >= 2 && (s.includes(word) || word.startsWith(s.substring(0, Math.min(s.length, 4))))) {
           foundIdx = j;
           break;
         }
       }
     }
 
-    // Fallback: use approxGlobal if word not found
-    if (foundIdx < 0) foundIdx = Math.max(searchFrom, approxGlobal);
-    lastHlIdxRef.current = foundIdx;
+    // Fallback: bleib am aktuellen Pointer (kein Rücksprung)
+    if (foundIdx < 0) foundIdx = from;
+    foundIdx = Math.min(foundIdx, useItems.length - 1);
+    lastMatchedItemRef.current = foundIdx;
 
-    const item = allItems[Math.min(foundIdx, allItems.length - 1)];
+    const item = useItems[foundIdx];
     if (item?.spanEl) {
       item.spanEl.classList.add('pdf-hl');
       highlightedSpanRef.current = item.spanEl;
-      item.spanEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Scroll nur wenn Span außerhalb sichtbarem Bereich
+      const rect = item.spanEl.getBoundingClientRect();
+      const vH = window.innerHeight;
+      if (rect.top < 80 || rect.bottom > vH - 80) {
+        item.spanEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightCharIndex, chapterText]);
