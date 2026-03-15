@@ -113,10 +113,11 @@ export default function PDFViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale]);
 
-  // Reset chapter cache when chapterText changes
+  // Reset chapter cache + highlight index when chapterText changes
   useEffect(() => {
     chapterStartRef.current = -1;
     chapterTextCacheRef.current = '';
+    lastHlIdxRef.current = 0;
   }, [chapterText]);
 
   // ── Highlight logic — ratio-based (avoids cleaned_text vs PDF-text coord mismatch) ──
@@ -129,15 +130,21 @@ export default function PDFViewer({
 
     // Only use items that belong to this chapter (at/after chapter start in PDF)
     const chStart = getChapterStart();
-    const chItems = chStart >= 0
-      ? allItems.filter(it => it.globalStart >= chStart)
-      : allItems;
-    if (!chItems.length) return;
+    // Limit to chapter items only: chStart → chStart + ~chapterText.length
+    // (with 1.5x buffer for spacing/formatting differences between cleaned_text and PDF text)
+    const estimatedChapterEnd = chStart >= 0 ? chStart + Math.floor(chapterText.length * 1.5) : Infinity;
+    const chItems = allItems.filter(it =>
+      it.globalStart >= (chStart >= 0 ? chStart : 0) &&
+      it.globalStart < estimatedChapterEnd
+    );
+    // Fallback if too few results
+    const useItems = chItems.length >= 3 ? chItems : allItems;
+    if (!useItems.length) return;
 
-    // Convert char position in cleaned_text → ratio → item index in chapter items
+    // Convert char position in cleaned_text → ratio → item index
     const ratio = Math.max(0, Math.min(1, highlightCharIndex / (chapterText.length - 1 || 1)));
-    const targetIdx = Math.min(Math.floor(ratio * chItems.length), chItems.length - 1);
-    const item = chItems[targetIdx];
+    const targetIdx = Math.min(Math.floor(ratio * useItems.length), useItems.length - 1);
+    const item = useItems[targetIdx];
 
     if (item?.spanEl) {
       item.spanEl.classList.add('pdf-hl');
@@ -378,9 +385,12 @@ export default function PDFViewer({
         if (!clickedStr) return;
 
         const allItems = textItemsRef.current;
-        // Use chapter-relative ratio: only items at/after chapter start
+        // Use chapter-relative ratio: only items within this chapter
         const chStart = getChapterStart();
-        const chItems = allItems.filter(it => it.globalStart >= chStart);
+        const estimatedEnd = chStart >= 0 ? chStart + Math.floor(ct.length * 1.5) : Infinity;
+        const chItems = allItems.filter(it =>
+          it.globalStart >= (chStart >= 0 ? chStart : 0) && it.globalStart < estimatedEnd
+        );
         const idxInCh = chItems.findIndex(it => it === capturedItem);
         const spanRatio = chItems.length > 1 && idxInCh >= 0
           ? idxInCh / (chItems.length - 1)
