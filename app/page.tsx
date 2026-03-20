@@ -1,235 +1,227 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import DocumentList from './components/DocumentList';
-import DocumentUpload from './components/DocumentUpload';
-import AuthButton from './components/AuthButton';
-import { extractPDF, ExtractProgress } from '@/lib/pdfExtract';
-import { savePDF, deletePDF } from '@/lib/pdfStorage';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import ChapterSidebar from './components/ChapterSidebar';
+import { Chapter } from './types';
+import ChapterView from './components/ChapterView';
+import TutorChat from './components/TutorChat';
+import DrawingCanvas, { DrawingCanvasRef } from './components/DrawingCanvas';
 
-const STORAGE_KEY = 'lernbot_documents';
-const CHAPTERS_KEY_PREFIX = 'lernbot_chapters_';
-
-function saveDocumentToStorage(document: any, chapters: any[]) {
-  if (typeof window === 'undefined') return;
-  const docs = getDocumentsFromStorage();
-  const existing = docs.findIndex((d: any) => d.id === document.id);
-  if (existing >= 0) {
-    docs[existing] = document;
-  } else {
-    docs.push(document);
-  }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
-  localStorage.setItem(`${CHAPTERS_KEY_PREFIX}${document.id}`, JSON.stringify(chapters));
-}
-
-function getDocumentsFromStorage(): any[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function deleteDocumentFromStorage(docId: string) {
-  if (typeof window === 'undefined') return;
-  const docs = getDocumentsFromStorage().filter((d: any) => d.id !== docId);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
-  localStorage.removeItem(`${CHAPTERS_KEY_PREFIX}${docId}`);
-}
+type RightPanel = 'chat' | 'canvas' | 'split';
 
 export default function Home() {
-  const [documents, setDocuments] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<ExtractProgress | null>(null);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [activeChapter, setActiveChapter] = useState<Chapter | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [initialPrompt, setInitialPrompt] = useState<string | null>(null);
+  const [rightPanel, setRightPanel] = useState<RightPanel>('chat');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const canvasRef = useRef<DrawingCanvasRef>(null);
 
   useEffect(() => {
-    setDocuments(getDocumentsFromStorage());
+    fetch('/api/chapters')
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setChapters(data);
+        }
+      })
+      .catch(err => console.error('Failed to load chapters:', err))
+      .finally(() => setLoading(false));
   }, []);
 
-  const handleUpload = async (file: File) => {
-    setLoading(true);
-    setUploadError(null);
-    setUploadProgress(null);
-
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const { document, chapters } = await extractPDF(file, (progress) => {
-        setUploadProgress(progress);
-      });
-      await savePDF(document.id, arrayBuffer);
-      saveDocumentToStorage(document, chapters);
-      setDocuments(getDocumentsFromStorage());
-    } catch (error: any) {
-      setUploadError(`Fehler beim Lesen der PDF: ${error.message}`);
-      console.error('Upload error:', error);
-    } finally {
-      setLoading(false);
-      setUploadProgress(null);
-    }
+  const handleSelectChapter = (chapter: Chapter) => {
+    setActiveChapter(chapter);
   };
 
-  const handleDelete = (docId: string) => {
-    deleteDocumentFromStorage(docId);
-    deletePDF(docId).catch(() => {});
-    setDocuments(getDocumentsFromStorage());
+  const handleStartLearning = () => {
+    setRightPanel('chat');
+    setInitialPrompt('Erkläre mir dieses Kapitel Schritt für Schritt. Beginne mit dem Wichtigsten und nutze anschauliche Beispiele. Welche Kernkonzepte muss ich verstehen?');
   };
 
-  const progressLabel = (() => {
-    if (!uploadProgress) return 'Verarbeitung läuft...';
-    if (uploadProgress.stage === 'reading') {
-      return `Seite ${uploadProgress.pagesProcessed} / ${uploadProgress.pagesTotal} wird gelesen...`;
-    }
-    if (uploadProgress.stage === 'processing') {
-      return 'Kapitel werden erkannt...';
-    }
-    return 'Fertig!';
-  })();
+  const getCanvasImage = useCallback((): string | null => {
+    return canvasRef.current?.getImageData() || null;
+  }, []);
 
-  const progressPercent = uploadProgress
-    ? uploadProgress.stage === 'processing' || uploadProgress.stage === 'done'
-      ? 100
-      : Math.round((uploadProgress.pagesProcessed / Math.max(uploadProgress.pagesTotal, 1)) * 100)
-    : 0;
+  if (loading) {
+    return (
+      <div style={{
+        height: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: '1rem',
+        background: 'var(--bg-primary)',
+        color: 'var(--text-primary)',
+      }}>
+        <span style={{ fontSize: '3rem' }}>🎓</span>
+        <h2 style={{ fontSize: '1.25rem' }}>TM Tutor wird geladen...</h2>
+        <div style={{ display: 'flex', gap: '0.4rem' }}>
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+          <span className="typing-dot" />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <main style={{ minHeight: '100vh', background: 'var(--white)' }}>
-      {/* Header */}
+    <div style={{
+      height: '100vh',
+      display: 'flex',
+      flexDirection: 'column',
+      background: 'var(--bg-primary)',
+    }}>
+      {/* Top Bar */}
       <header style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        background: 'var(--navy)',
-        zIndex: 1000,
-        borderBottom: '1px solid rgba(255,255,255,0.1)'
+        height: '48px',
+        background: 'var(--bg-secondary)',
+        borderBottom: '1px solid var(--border)',
+        display: 'flex',
+        alignItems: 'center',
+        padding: '0 1rem',
+        gap: '1rem',
+        flexShrink: 0,
       }}>
-        <div style={{
-          maxWidth: '1280px',
-          margin: '0 auto',
-          padding: '0 2rem',
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          style={{
+            padding: '0.3rem 0.5rem',
+            background: 'none',
+            color: 'var(--text-secondary)',
+            fontSize: '1.2rem',
+          }}
+        >
+          ☰
+        </button>
+        <h1 style={{
+          fontSize: '1rem',
+          fontWeight: 700,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          height: '72px'
+          gap: '0.5rem',
+          color: 'var(--text-primary)',
         }}>
-          <div style={{
-            fontSize: '20px',
-            fontWeight: 700,
-            color: 'var(--white)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px'
+          <span style={{
+            background: 'var(--accent)',
+            padding: '0.2rem 0.5rem',
+            borderRadius: '6px',
+            fontSize: '0.85rem',
           }}>
-            <span style={{
-              width: '40px',
-              height: '40px',
-              background: 'var(--gold)',
-              borderRadius: '8px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '24px'
-            }}>📚</span>
-            LearnFlow
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <AuthButton />
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)' }}>v1.0.0</span>
-          </div>
+            🎓
+          </span>
+          TM Tutor
+        </h1>
+
+        {activeChapter && (
+          <span style={{
+            fontSize: '0.8rem',
+            color: 'var(--text-secondary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+          }}>
+            {activeChapter.skript} → {activeChapter.titel}
+          </span>
+        )}
+
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.25rem' }}>
+          {(['chat', 'canvas', 'split'] as RightPanel[]).map(panel => (
+            <button
+              key={panel}
+              onClick={() => setRightPanel(panel)}
+              style={{
+                padding: '0.3rem 0.6rem',
+                background: rightPanel === panel ? 'var(--accent-light)' : 'var(--bg-tertiary)',
+                color: rightPanel === panel ? 'var(--accent)' : 'var(--text-muted)',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {panel === 'chat' ? '💬 Chat' : panel === 'canvas' ? '✏️ Canvas' : '📐 Beides'}
+            </button>
+          ))}
         </div>
       </header>
 
       {/* Main Content */}
       <div style={{
-        maxWidth: '1280px',
-        margin: '0 auto',
-        padding: '120px 2rem 4rem',
+        flex: 1,
+        display: 'flex',
+        overflow: 'hidden',
       }}>
+        {/* Sidebar */}
+        {sidebarOpen && (
+          <div style={{
+            width: '280px',
+            flexShrink: 0,
+            height: '100%',
+            overflow: 'hidden',
+          }}>
+            <ChapterSidebar
+              chapters={chapters}
+              activeChapter={activeChapter}
+              onSelectChapter={handleSelectChapter}
+            />
+          </div>
+        )}
 
-        {/* Hero */}
-        <div style={{ marginBottom: '3rem' }}>
-          <h1 style={{ marginBottom: '12px' }}>Deine PDFs vorlesen lassen</h1>
-          <p style={{ fontSize: '18px', color: 'var(--text-muted)', maxWidth: '600px' }}>
-            Lade ein PDF hoch — Text wird automatisch extrahiert und vorgelesen. Daten bleiben lokal in deinem Browser.
-          </p>
+        {/* Left Panel — Chapter View */}
+        <div style={{
+          width: sidebarOpen ? 'calc(40% - 280px)' : '40%',
+          minWidth: '250px',
+          flexShrink: 0,
+          height: '100%',
+          overflow: 'hidden',
+          borderRight: '1px solid var(--border)',
+        }}>
+          <ChapterView
+            chapter={activeChapter}
+            onStartLearning={handleStartLearning}
+          />
         </div>
 
-        {/* Upload */}
-        <div style={{ marginBottom: '2rem' }}>
-          <DocumentUpload onUpload={handleUpload} loading={loading} />
+        {/* Right Panel — Chat + Canvas */}
+        <div style={{
+          flex: 1,
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}>
+          {rightPanel === 'chat' && (
+            <TutorChat
+              chapter={activeChapter}
+              initialPrompt={initialPrompt}
+              onClearInitialPrompt={() => setInitialPrompt(null)}
+              onSendCanvasImage={getCanvasImage}
+            />
+          )}
+
+          {rightPanel === 'canvas' && (
+            <DrawingCanvas ref={canvasRef} />
+          )}
+
+          {rightPanel === 'split' && (
+            <>
+              <div style={{ flex: 1, overflow: 'hidden' }}>
+                <TutorChat
+                  chapter={activeChapter}
+                  initialPrompt={initialPrompt}
+                  onClearInitialPrompt={() => setInitialPrompt(null)}
+                  onSendCanvasImage={getCanvasImage}
+                />
+              </div>
+              <div style={{ height: '40%', flexShrink: 0 }}>
+                <DrawingCanvas ref={canvasRef} />
+              </div>
+            </>
+          )}
         </div>
-
-        {/* Loading Progress */}
-        {loading && (
-          <div style={{
-            background: '#eff6ff',
-            border: '1px solid #bfdbfe',
-            borderRadius: '10px',
-            padding: '16px 20px',
-            marginBottom: '2rem',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '10px' }}>
-              <span className="spinner spinner-dark" style={{
-                borderColor: 'rgba(27,58,140,0.2)',
-                borderTopColor: 'var(--navy)',
-              }} />
-              <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--navy)' }}>
-                PDF wird analysiert...
-              </span>
-              <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                {progressLabel}
-              </span>
-            </div>
-            {/* Progress bar */}
-            <div style={{
-              height: '6px',
-              background: '#dbeafe',
-              borderRadius: '3px',
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                height: '100%',
-                background: 'var(--navy)',
-                borderRadius: '3px',
-                width: loading && !uploadProgress ? '15%' : `${progressPercent}%`,
-                transition: 'width 0.3s ease',
-              }} />
-            </div>
-          </div>
-        )}
-
-        {/* Error */}
-        {uploadError && (
-          <div style={{
-            background: '#fef2f2',
-            border: '1px solid #fca5a5',
-            color: '#dc2626',
-            padding: '12px 16px',
-            borderRadius: '8px',
-            marginBottom: '2rem',
-            fontSize: '14px'
-          }}>
-            ⚠️ {uploadError}
-          </div>
-        )}
-
-        {/* Dokumente */}
-        {documents.length === 0 ? (
-          <div style={{
-            textAlign: 'center',
-            padding: '3rem',
-            border: `2px dashed var(--border)`,
-            borderRadius: '12px'
-          }}>
-            <p style={{ color: 'var(--text-muted)' }}>Noch keine PDFs hochgeladen</p>
-          </div>
-        ) : (
-          <DocumentList documents={documents} onDelete={handleDelete} />
-        )}
       </div>
-    </main>
+    </div>
   );
 }

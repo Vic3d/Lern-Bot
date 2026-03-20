@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LearnFlow",
-  description: "Audio learning platform for PDFs",
+  title: "TM Tutor — Technische Mechanik",
+  description: "Dein persönlicher KI-Tutor für Technische Mechanik",
 };
 
 export default function RootLayout({
@@ -12,10 +12,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="de">
-      <body className="bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-50">
-        {children}
-      </body>
+    <html lang="de" className="dark">
+      <head>
+        <link
+          rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
+          crossOrigin="anonymous"
+        />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }
