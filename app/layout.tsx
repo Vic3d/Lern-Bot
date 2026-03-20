@@ -1,9 +1,9 @@
-import type { Metadata } from "next";
-import "./globals.css";
+import type { Metadata } from 'next';
+import './globals.css';
 
 export const metadata: Metadata = {
-  title: "TM Tutor — Technische Mechanik",
-  description: "Dein persönlicher KI-Tutor für Technische Mechanik",
+  title: 'Lern-Bot v2 - KI Tutor für Technische Mechanik',
+  description: 'Persönlicher KI-Tutor für Technische Mechanik mit intelligenten Erklärungen',
 };
 
 export default function RootLayout({
@@ -12,15 +12,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="de" className="dark">
+    <html lang="de">
       <head>
-        <link
-          rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
-          crossOrigin="anonymous"
-        />
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+      </body>
     </html>
   );
 }

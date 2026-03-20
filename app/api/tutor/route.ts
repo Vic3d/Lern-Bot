@@ -1,160 +1,101 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-
-const SYSTEM_PROMPT_BASE = `Du bist ein persönlicher Tutor für Technische Mechanik. Dein Student heißt Victor.
-
-## Deine Rolle
-- Du bist ein erfahrener, geduldiger Dozent der Technischen Mechanik
-- Du erklärst verständlich, nutzt anschauliche Beispiele und Analogien
-- Du stellst Rückfragen um sicherzustellen dass Victor es verstanden hat
-- Du korrigierst Fehler nicht direkt — stattdessen führst du durch Fragen zum richtigen Ergebnis (sokratische Methode)
-
-## Pädagogische Prinzipien
-1. **Worked Examples → Fading**: Erst komplett vorrechnen, dann Lücken lassen, dann Victor selbst lösen lassen
-2. **Dual Coding**: Erkläre verbal UND beschreibe was man zeichnen/skizzieren sollte
-3. **Scaffolding**: Immer leicht über Victors aktuellem Niveau
-4. **Aktives Recall**: Statt Zusammenfassungen → Fragen stellen
-5. **Fehler als Lernchance**: "Schau mal auf dein FKB — welche Kraft fehlt?"
-
-## Formeln
-- Schreibe ALLE Formeln in LaTeX: Inline $F = m \\cdot a$ oder Display $$\\sum F_x = 0$$
-- Nutze \\text{} für Einheiten: $F = 10\\,\\text{kN}$
-- Bei Gleichungssystemen nutze \\begin{aligned}...\\end{aligned}
-
-## Aufgaben stellen
-Wenn du eine Aufgabe stellst:
-1. Beschreibe die Situation klar (mit Maßen, Kräften, Lagerung)
-2. Beschreibe was man zeichnen sollte (FKB)
-3. Stelle eine konkrete Frage
-4. Warte auf Victors Antwort — löse NICHT sofort selbst
-
-## Wenn Victor ein Canvas-Bild schickt
-- Analysiere die Zeichnung sorgfältig
-- Erkenne Kräfte, Lager, Stäbe, Momente
-- Gib konkretes Feedback: Was ist richtig? Was fehlt? Was ist falsch?
-
-## Sprache
-- Deutsch, locker aber fachlich korrekt
-- Duze Victor
-- Kurze Absätze, nicht zu viel auf einmal`;
+const client = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
 export async function POST(req: NextRequest) {
-  if (!ANTHROPIC_API_KEY) {
-    return new Response(JSON.stringify({ error: 'ANTHROPIC_API_KEY nicht konfiguriert' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  if (!ANTHROPIC_KEY) {
+    return NextResponse.json(
+      { error: 'ANTHROPIC_API_KEY not set' },
+      { status: 500 }
+    );
   }
+
+  let message = '';
+  let kapitelText = '';
 
   try {
     const body = await req.json();
-    const { messages, chapterContext } = body as {
-      messages: Array<{ role: string; content: string | Array<{type: string; text?: string; source?: any}> }>;
-      chapterContext?: { titel: string; skript: string; text: string };
-    };
+    message = body.message || '';
+    kapitelText = body.kapitelText || '';
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
 
-    if (!messages || !Array.isArray(messages)) {
-      return new Response(JSON.stringify({ error: 'messages required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+  if (!message.trim()) {
+    return NextResponse.json({ error: 'Message required' }, { status: 400 });
+  }
 
-    let systemPrompt = SYSTEM_PROMPT_BASE;
-    if (chapterContext) {
-      systemPrompt += `\n\n## Aktuelles Kapitel
-**Skript:** ${chapterContext.skript}
-**Kapitel:** ${chapterContext.titel}
+  // System prompt mit pädagogischem Kontext
+  const systemPrompt = `Du bist Albert, ein persönlicher Tutor für Technische Mechanik. 
+Dein Ziel: Victors Verständnis für TME (Technische Mechanik Einführung) aufbauen.
 
-### Kapitelinhalt (zum Nachschlagen):
-${chapterContext.text.slice(0, 8000)}`;
-    }
+## Deine Regeln:
+1. **Arbeited Examples**: Zeige komplette Lösungen Schritt für Schritt, dann reduziere deine Hilfe
+2. **Visuell + Auditiv**: Erkläre mit Diagrammen (ASCII-Skizzen OK) UND gesprochener Erklärung
+3. **Aktives Recall**: Stelle Fragen, statt nur zu erzählen
+4. **Fehler als Chancen**: Wenn Victor was falsch macht → sokratische Methode (Fragen stellen)
+5. **Formeln**: IMMER in $...$ LaTeX-Notation (z.B. $F = m \\cdot a$)
 
-    // Call Anthropic API with streaming
+## Aktuelles Kapitel-Material:
+${kapitelText ? `\`\`\`\n${kapitelText}\n\`\`\`` : '(Kein Kapitel geladen)'}
+
+## Tone:
+- Locker, freundlich, nicht belehrend
+- Schaff Vertrauen — Victor soll gerne nachfragen
+- Kurz halten, aber präzise
+
+Antworte auf Deutsch. Nutze Markdown und LaTeX für Formeln.`;
+
+  try {
+    // Use standard fetch for streaming
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
+        'x-api-key': ANTHROPIC_KEY,
         'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
+        model: 'claude-opus-4-1-20250805',
+        max_tokens: 1024,
         system: systemPrompt,
-        messages: messages.map(m => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        })),
+        messages: [
+          {
+            role: 'user',
+            content: message,
+          },
+        ],
         stream: true,
       }),
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error('Anthropic API error:', response.status, errText);
-      return new Response(JSON.stringify({ error: `API Error: ${response.status}` }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const err = await response.text();
+      console.error('Anthropic API error:', response.status, err);
+      return NextResponse.json(
+        { error: 'Failed to get response from Claude' },
+        { status: 500 }
+      );
     }
 
-    // Stream the response back
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') continue;
-                try {
-                  const parsed = JSON.parse(data);
-                  if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: parsed.delta.text })}\n\n`));
-                  }
-                  if (parsed.type === 'message_stop') {
-                    controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-                  }
-                } catch {
-                  // skip unparseable
-                }
-              }
-            }
-          }
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-        } catch (err) {
-          controller.error(err);
-        }
-      },
-    });
-
-    return new Response(readable, {
+    // Return the streaming response
+    return new NextResponse(response.body, {
+      status: 200,
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
       },
     });
-  } catch (err: any) {
-    console.error('Tutor route error:', err);
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+  } catch (error: any) {
+    console.error('Tutor route error:', error);
+    return NextResponse.json(
+      { error: error.message || 'Internal server error' },
+      { status: 500 }
+    );
   }
 }

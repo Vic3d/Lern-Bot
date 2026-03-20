@@ -1,210 +1,180 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Chapter } from '../types';
+import chapters from '@/data/all_chapters.json';
 
-interface Props {
-  chapters: Chapter[];
-  activeChapter: Chapter | null;
-  onSelectChapter: (chapter: Chapter) => void;
+interface Chapter {
+  id: string;
+  skript: string;
+  kapitel_nr: string;
+  titel: string;
+  text: string;
+  seite_von: number;
+  seite_bis: number;
 }
 
-const SKRIPT_META: Record<string, { name: string; color: string; emoji: string }> = {
-  TME101: { name: 'Ebene Kräftesysteme', color: '#3fb950', emoji: '⚡' },
-  TME102: { name: 'Statik ebener Tragwerke', color: '#58a6ff', emoji: '🏗️' },
-  TME103: { name: 'Schwerpunkte & Schnittgrößen', color: '#d29922', emoji: '📐' },
-};
+interface ChapterSidebarProps {
+  onSelectChapter: (chapter: Chapter) => void;
+  selectedId?: string;
+}
 
-export default function ChapterSidebar({ chapters, activeChapter, onSelectChapter }: Props) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({ TME101: true, TME102: false, TME103: false });
-  const [completed, setCompleted] = useState<Record<string, boolean>>({});
+export function ChapterSidebar({ onSelectChapter, selectedId }: ChapterSidebarProps) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    TME101: true,
+    TME102: false,
+    TME103: false,
+  });
+  const [completed, setCompleted] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('tutor_completed');
-      if (stored) setCompleted(JSON.parse(stored));
-    } catch {}
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('completed_chapters');
+      if (saved) setCompleted(new Set(JSON.parse(saved)));
+    }
   }, []);
 
-  // Listen for external updates
-  useEffect(() => {
-    const handler = () => {
-      try {
-        const stored = localStorage.getItem('tutor_completed');
-        if (stored) setCompleted(JSON.parse(stored));
-      } catch {}
-    };
-    window.addEventListener('tutor_progress_update', handler);
-    return () => window.removeEventListener('tutor_progress_update', handler);
-  }, []);
-
-  const toggleSkript = (skript: string) => {
-    setExpanded(prev => ({ ...prev, [skript]: !prev[skript] }));
+  const grouped: Record<string, Chapter[]> = {
+    TME101: [],
+    TME102: [],
+    TME103: [],
   };
 
-  const toggleComplete = (e: React.MouseEvent, chapterId: string) => {
-    e.stopPropagation();
-    const newCompleted = { ...completed, [chapterId]: !completed[chapterId] };
+  (chapters as Chapter[]).forEach((ch) => {
+    if (grouped[ch.skript]) {
+      grouped[ch.skript].push(ch);
+    }
+  });
+
+  const toggleExpanded = (skript: string) => {
+    setExpanded((prev) => ({ ...prev, [skript]: !prev[skript] }));
+  };
+
+  const toggleComplete = (id: string) => {
+    const newCompleted = new Set(completed);
+    if (newCompleted.has(id)) {
+      newCompleted.delete(id);
+    } else {
+      newCompleted.add(id);
+    }
     setCompleted(newCompleted);
-    localStorage.setItem('tutor_completed', JSON.stringify(newCompleted));
+    localStorage.setItem('completed_chapters', JSON.stringify(Array.from(newCompleted)));
   };
-
-  const grouped = chapters.reduce((acc, ch) => {
-    if (!acc[ch.skript]) acc[ch.skript] = [];
-    acc[ch.skript].push(ch);
-    return acc;
-  }, {} as Record<string, Chapter[]>);
-
-  const totalChapters = chapters.length;
-  const completedCount = Object.values(completed).filter(Boolean).length;
-  const progressPct = totalChapters ? Math.round((completedCount / totalChapters) * 100) : 0;
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      background: 'var(--bg-secondary)',
-      borderRight: '1px solid var(--border)',
-      overflowY: 'auto',
-    }}>
+    <div
+      style={{
+        width: '40%',
+        background: 'var(--bg-secondary)',
+        borderRight: `1px solid var(--border)`,
+        overflowY: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
       {/* Header */}
-      <div style={{
-        padding: '16px',
-        borderBottom: '1px solid var(--border)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-          <span style={{ fontSize: '24px' }}>🎓</span>
-          <div>
-            <div style={{ fontWeight: 700, fontSize: '15px' }}>TM Tutor</div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Technische Mechanik</div>
-          </div>
-        </div>
-
-        {/* Progress */}
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>
-            <span>Fortschritt</span>
-            <span>{completedCount}/{totalChapters} ({progressPct}%)</span>
-          </div>
-          <div style={{
-            height: '4px',
-            background: 'var(--bg-tertiary)',
-            borderRadius: '2px',
-            overflow: 'hidden',
-          }}>
-            <div style={{
-              height: '100%',
-              width: `${progressPct}%`,
-              background: 'var(--accent)',
-              borderRadius: '2px',
-              transition: 'width 0.3s',
-            }} />
-          </div>
-        </div>
+      <div style={{ padding: '1.5rem', borderBottom: `1px solid var(--border)` }}>
+        <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+          📚 Kapitel
+        </h2>
+        <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+          3 Skripte, 30 Kapitel
+        </p>
       </div>
 
-      {/* Chapters */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {Object.entries(SKRIPT_META).map(([skript, meta]) => {
-          const skriptChapters = grouped[skript] || [];
-          const skriptCompleted = skriptChapters.filter(ch => completed[ch.id]).length;
-          const isExpanded = expanded[skript];
+      {/* Scripts List */}
+      <div style={{ flex: 1 }}>
+        {(['TME101', 'TME102', 'TME103'] as const).map((skript) => (
+          <div key={skript}>
+            {/* Skript Header */}
+            <button
+              onClick={() => toggleExpanded(skript)}
+              style={{
+                width: '100%',
+                padding: '1rem 1.5rem',
+                background: 'transparent',
+                border: 'none',
+                borderBottom: `1px solid var(--border)`,
+                color: 'var(--text-primary)',
+                fontSize: '0.95rem',
+                fontWeight: 600,
+                textAlign: 'left',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--bg-tertiary)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <span>{expanded[skript] ? '▼' : '▶'}</span>
+              <span style={{ flex: 1 }}>{skript}</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                ({grouped[skript].length})
+              </span>
+            </button>
 
-          return (
-            <div key={skript}>
-              <button
-                onClick={() => toggleSkript(skript)}
-                style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 16px',
-                  background: 'none',
-                  border: 'none',
-                  borderBottom: '1px solid var(--border)',
-                  color: 'var(--text-primary)',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  fontSize: '13px',
-                }}
-              >
-                <span>{meta.emoji}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600 }}>{skript}</div>
-                  <div style={{ fontSize: '11px', color: meta.color }}>{meta.name}</div>
-                </div>
-                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                  {skriptCompleted}/{skriptChapters.length}
-                </span>
-                <span style={{
-                  transform: isExpanded ? 'rotate(180deg)' : 'rotate(0)',
-                  transition: 'transform 0.2s',
-                  fontSize: '10px',
-                }}>▼</span>
-              </button>
-
-              {isExpanded && (
-                <div>
-                  {skriptChapters.map(ch => {
-                    const isActive = activeChapter?.id === ch.id;
-                    const isDone = completed[ch.id];
-
-                    return (
-                      <button
-                        key={ch.id}
-                        onClick={() => onSelectChapter(ch)}
-                        style={{
-                          width: '100%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          padding: '8px 16px 8px 32px',
-                          background: isActive ? 'var(--accent-light)' : 'none',
-                          border: 'none',
-                          borderLeft: isActive ? `3px solid ${meta.color}` : '3px solid transparent',
-                          color: 'var(--text-primary)',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          fontSize: '12px',
-                        }}
-                      >
-                        <span
-                          onClick={(e) => toggleComplete(e, ch.id)}
-                          style={{
-                            width: '18px',
-                            height: '18px',
-                            borderRadius: '4px',
-                            border: isDone ? 'none' : '1px solid var(--border)',
-                            background: isDone ? 'var(--accent)' : 'transparent',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '11px',
-                            flexShrink: 0,
-                            color: 'white',
-                          }}
-                        >
-                          {isDone ? '✓' : ''}
-                        </span>
-                        <span style={{
-                          flex: 1,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          opacity: isDone ? 0.6 : 1,
-                        }}>
-                          {ch.kapitel_nr ? `${ch.kapitel_nr} ` : ''}{ch.titel}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
+            {/* Chapters */}
+            {expanded[skript] && (
+              <div style={{ background: 'var(--bg-tertiary)' }}>
+                {grouped[skript].map((ch) => (
+                  <button
+                    key={ch.id}
+                    onClick={() => onSelectChapter(ch)}
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem 1.5rem 0.75rem 2.5rem',
+                      background: selectedId === ch.id ? 'var(--accent-light)' : 'transparent',
+                      border: 'none',
+                      borderBottom: `1px solid var(--border)`,
+                      color: selectedId === ch.id ? 'var(--accent)' : 'var(--text-secondary)',
+                      fontSize: '0.85rem',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (selectedId !== ch.id) {
+                        e.currentTarget.style.background = 'rgba(124, 58, 237, 0.08)';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (selectedId !== ch.id) {
+                        e.currentTarget.style.background = 'transparent';
+                      }
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={completed.has(ch.id)}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        toggleComplete(ch.id);
+                      }}
+                      style={{
+                        width: '16px',
+                        height: '16px',
+                        cursor: 'pointer',
+                      }}
+                    />
+                    <span style={{ flex: 1 }}>
+                      {ch.kapitel_nr} {ch.titel}
+                    </span>
+                    {completed.has(ch.id) && (
+                      <span style={{ color: 'var(--success)' }}>✓</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
