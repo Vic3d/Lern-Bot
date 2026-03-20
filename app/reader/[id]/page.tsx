@@ -13,6 +13,7 @@ import Link from 'next/link';
 import ChapterSummary from '@/app/components/ChapterSummary';
 import Quiz from '@/app/components/Quiz';
 import ExplainButton from '@/app/components/ExplainButton';
+import SpeechifyReader from '@/app/components/SpeechifyReader';
 
 const CHAPTERS_KEY = (id: string) => `lernbot_chapters_${id}`;
 const PROGRESS_KEY = (id: string) => `lernbot_progress_${id}`;
@@ -65,6 +66,7 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
   const [speed, setSpeed] = useState(1.0);
   const [resumePrompt, setResumePrompt] = useState<{ chapterIndex: number; charOffset?: number } | null>(null);
   const [ttsSeekTarget, setTtsSeekTarget] = useState<{ char: number; seq: number } | null>(null);
+  const [showSpeechify, setShowSpeechify] = useState(false);
   const seekSeqRef = useRef(0);
   const sessionStartRef = useRef<number>(Date.now());
   const chapterStartRef = useRef<number>(Date.now());
@@ -310,13 +312,31 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
                 highlightCharIndex={highlightChar}
                 bionicReading={bionicReading}
               />
-              {/* LEARN-FEATURES: Erklär-Button am Ende des Texts */}
+              {/* LEARN-FEATURES: Erklär-Button + Vorlesen am Ende des Texts */}
               {chapter?.cleaned_text && (
-                <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
+                <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                   <ExplainButton
                     text={chapter.cleaned_text}
                     chapterContext={cleanTitle(chapter.title || '')}
                   />
+                  <button
+                    onClick={() => setShowSpeechify(true)}
+                    style={{
+                      padding: '8px 16px',
+                      background: '#1e293b',
+                      color: '#fde68a',
+                      border: '1px solid #facc15',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                  >
+                    🔊 Vorlesen
+                  </button>
                 </div>
               )}
             </div>
@@ -498,6 +518,14 @@ export default function ReaderPage({ params }: { params: { id: string } }) {
           </div>
         </div>
       </div>
+
+      {/* Speechify Reader Overlay */}
+      {showSpeechify && chapter?.cleaned_text && (
+        <SpeechifyReader
+          text={chapter.cleaned_text}
+          onClose={() => setShowSpeechify(false)}
+        />
+      )}
     </main>
   );
 }

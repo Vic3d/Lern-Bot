@@ -4,13 +4,16 @@ import { useRef, useEffect, useState } from 'react';
 
 interface DrawingCanvasProps {
   onScreenshotTaken?: (screenshot: string) => void;
+  chapterTitle?: string;
 }
 
-export function DrawingCanvas({ onScreenshotTaken }: DrawingCanvasProps) {
+export function DrawingCanvas({ onScreenshotTaken, chapterTitle }: DrawingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [color, setColor] = useState('#ffffff');
   const [lineWidth, setLineWidth] = useState(2);
+  const [visionLoading, setVisionLoading] = useState(false);
+  const [visionResult, setVisionResult] = useState<string | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -98,12 +101,36 @@ export function DrawingCanvas({ onScreenshotTaken }: DrawingCanvasProps) {
     }
   };
 
-  const takeScreenshot = () => {
+  const takeScreenshot = async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const imageData = canvas.toDataURL('image/png');
     if (onScreenshotTaken) {
       onScreenshotTaken(imageData);
+    }
+
+    // Vision API call
+    const imageBase64 = imageData.split(',')[1];
+    if (!imageBase64) return;
+
+    setVisionLoading(true);
+    setVisionResult(null);
+    try {
+      const res = await fetch('/api/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64, context: chapterTitle }),
+      });
+      const data = await res.json();
+      if (data.explanation) {
+        setVisionResult(data.explanation);
+      } else if (data.error) {
+        setVisionResult(`Fehler: ${data.error}`);
+      }
+    } catch {
+      setVisionResult('Verbindungsfehler zur Vision API.');
+    } finally {
+      setVisionLoading(false);
     }
   };
 
@@ -228,6 +255,34 @@ export function DrawingCanvas({ onScreenshotTaken }: DrawingCanvasProps) {
           📸 An Tutor senden
         </button>
       </div>
+
+      {/* Vision Result Toast */}
+      {(visionLoading || visionResult) && (
+        <div style={{
+          padding: '12px 16px',
+          background: visionLoading ? '#1e3a5f' : '#1a2e1a',
+          borderBottom: '1px solid rgba(255,255,255,0.1)',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '10px',
+        }}>
+          {visionLoading ? (
+            <>
+              <span style={{ fontSize: '14px' }}>🤖</span>
+              <span style={{ fontSize: '13px', color: '#93c5fd' }}>Tutor analysiert die Zeichnung…</span>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: '14px', flexShrink: 0 }}>🤖</span>
+              <span style={{ fontSize: '13px', color: '#86efac', flex: 1, lineHeight: '1.5' }}>{visionResult}</span>
+              <button
+                onClick={() => setVisionResult(null)}
+                style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '14px', flexShrink: 0 }}
+              >✕</button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Canvas */}
       <canvas
